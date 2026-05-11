@@ -63,8 +63,10 @@ class MotorConfig:
 
 @dataclass(frozen=True)
 class LaneConfig:
-    # White line HSV threshold:
+    # ------------------------------------------------------------
+    # White line HSV threshold
     # White usually has LOW saturation and HIGH brightness/value.
+    # ------------------------------------------------------------
     lower_white_h: int = 0
     lower_white_s: int = 0
     lower_white_v: int = 170
@@ -73,13 +75,39 @@ class LaneConfig:
     upper_white_s: int = 80
     upper_white_v: int = 255
 
+    # ------------------------------------------------------------
+    # Green line HSV threshold
+    # Required by raspbot/vision/green_lane_detector.py
+    # ------------------------------------------------------------
+    lower_green_h: int = 35
+    lower_green_s: int = 40
+    lower_green_v: int = 40
+
+    upper_green_h: int = 90
+    upper_green_s: int = 255
+    upper_green_v: int = 255
+
+    # ------------------------------------------------------------
+    # Shared mask cleanup
+    # ------------------------------------------------------------
     morphology_kernel_size: int = 5
 
-    # ROI shape for a single center white line.
+    # ------------------------------------------------------------
+    # ROI shape
+    # Used by GreenLaneDetector.apply_roi()
+    # ------------------------------------------------------------
     roi_top_ratio: float = 0.35
     roi_left_top_ratio: float = 0.20
     roi_right_top_ratio: float = 0.80
 
+    # This cuts out the center region.
+    # Useful if detecting left/right green lane borders.
+    center_cutout_left_ratio: float = 0.40
+    center_cutout_right_ratio: float = 0.60
+
+    # ------------------------------------------------------------
+    # Hough line detector settings
+    # ------------------------------------------------------------
     hough_rho: int = 2
     hough_theta_divisor: int = 180
     hough_threshold: int = 60
@@ -88,6 +116,9 @@ class LaneConfig:
 
     lane_center_tolerance_px: int = 25
     min_lines_required: int = 1
+
+    # Optional compatibility field
+    min_contour_area: int = 300
 
 
 @dataclass(frozen=True)
