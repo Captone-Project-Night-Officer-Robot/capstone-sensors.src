@@ -1,0 +1,7 @@
+opencv-python>=4.8.0
+numpy>=1.24.0
+RPi.GPIO>=0.7.1
+
+# On Raspberry Pi OS, picamera2 is usually better installed with:
+# sudo apt install -y python3-picamera2
+picamera2
