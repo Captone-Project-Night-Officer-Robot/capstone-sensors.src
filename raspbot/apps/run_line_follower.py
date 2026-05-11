@@ -35,7 +35,6 @@ def build_config(args) -> AppConfig:
     base = AppConfig()
 
     motor = MotorConfig(
-        yb_pcb_car_path=base.motor.yb_pcb_car_path,
         forward_speed=args.forward_speed if args.forward_speed is not None else base.motor.forward_speed,
         turn_speed=args.turn_speed if args.turn_speed is not None else base.motor.turn_speed,
         slow_speed=args.slow_speed if args.slow_speed is not None else base.motor.slow_speed,
@@ -43,8 +42,12 @@ def build_config(args) -> AppConfig:
     )
 
     navigation = NavigationConfig(
-        emergency_stop_cm=args.emergency_stop_cm if args.emergency_stop_cm is not None else base.navigation.emergency_stop_cm,
-        caution_cm=args.caution_cm if args.caution_cm is not None else base.navigation.caution_cm,
+        emergency_stop_cm=args.emergency_stop_cm
+        if args.emergency_stop_cm is not None
+        else base.navigation.emergency_stop_cm,
+        caution_cm=args.caution_cm
+        if args.caution_cm is not None
+        else base.navigation.caution_cm,
         max_valid_distance_cm=base.navigation.max_valid_distance_cm,
         no_lane_behavior=base.navigation.no_lane_behavior,
         control_loop_sleep_sec=base.navigation.control_loop_sleep_sec,
@@ -116,6 +119,7 @@ def main() -> None:
 
         try:
             import RPi.GPIO as GPIO
+
             GPIO.cleanup()
         except Exception:
             pass
