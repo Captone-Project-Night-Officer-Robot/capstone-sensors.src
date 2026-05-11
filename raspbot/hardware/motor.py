@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import sys
 import time
 from dataclasses import dataclass
 from typing import Protocol
@@ -27,26 +26,26 @@ class MotorCommand:
 
 
 class MotorControl:
-    """Safe wrapper around YB_Pcb_Car.
+    """Safe wrapper around the local YB_Pcb_Car driver.
 
-    Speed convention:
-    - positive speed = forward
-    - negative speed = backward
-    - zero = stopped
+    No .env path is required.
+
+    Required local file:
+        robot_side/motor_driver/YB_Pcb_Car.py
+
+    Required class:
+        class YB_Pcb_Car
     """
 
     def __init__(self, config: MotorConfig | None = None):
         self.config = config or MotorConfig()
 
-        if self.config.yb_pcb_car_path and self.config.yb_pcb_car_path not in sys.path:
-            sys.path.append(self.config.yb_pcb_car_path)
-
         try:
-            from YB_Pcb_Car import YB_Pcb_Car
+            from robot_side.motor_driver.YB_Pcb_Car import YB_Pcb_Car
         except Exception as exc:
             raise RuntimeError(
-                "Could not import YB_Pcb_Car. Set YB_PCB_CAR_PATH to the folder "
-                "that contains YB_Pcb_Car.py."
+                "Could not import local motor driver. Expected file: "
+                "robot_side/motor_driver/YB_Pcb_Car.py with class YB_Pcb_Car."
             ) from exc
 
         self.car = YB_Pcb_Car()

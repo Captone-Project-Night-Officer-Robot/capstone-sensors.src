@@ -48,44 +48,46 @@ class CameraConfig:
 
 @dataclass(frozen=True)
 class MotorConfig:
-    yb_pcb_car_path: str = os.getenv(
-        "YB_PCB_CAR_PATH",
-        "/home/farmscout/Raspbot/2.Hardware Control course/02.Drive motor",
-    )
+    """Motor runtime tuning.
 
-    forward_speed: int = _env_int("RASPBOT_FORWARD_SPEED", 45)
-    turn_speed: int = _env_int("RASPBOT_TURN_SPEED", 35)
-    slow_speed: int = _env_int("RASPBOT_SLOW_SPEED", 25)
+    This project does NOT read YB_PCB_CAR_PATH from .env anymore.
+    The local driver is imported from:
+        robot_side/motor_driver/YB_Pcb_Car.py
+    """
+
+    forward_speed: int = _env_int("RASPBOT_FORWARD_SPEED", 30)
+    turn_speed: int = _env_int("RASPBOT_TURN_SPEED", 25)
+    slow_speed: int = _env_int("RASPBOT_SLOW_SPEED", 20)
     max_speed: int = 100
 
 
 @dataclass(frozen=True)
 class LaneConfig:
-    lower_green_h: int = 35
-    lower_green_s: int = 40
-    lower_green_v: int = 40
+    # White line HSV threshold:
+    # White usually has LOW saturation and HIGH brightness/value.
+    lower_white_h: int = 0
+    lower_white_s: int = 0
+    lower_white_v: int = 170
 
-    upper_green_h: int = 80
-    upper_green_s: int = 255
-    upper_green_v: int = 255
+    upper_white_h: int = 180
+    upper_white_s: int = 80
+    upper_white_v: int = 255
 
     morphology_kernel_size: int = 5
 
+    # ROI shape for a single center white line.
     roi_top_ratio: float = 0.35
-    roi_left_top_ratio: float = 0.05
-    roi_right_top_ratio: float = 0.95
-
-    center_cutout_left_ratio: float = 0.25
-    center_cutout_right_ratio: float = 0.75
+    roi_left_top_ratio: float = 0.20
+    roi_right_top_ratio: float = 0.80
 
     hough_rho: int = 2
     hough_theta_divisor: int = 180
-    hough_threshold: int = 110
-    hough_min_line_length: int = 80
-    hough_max_line_gap: int = 30
+    hough_threshold: int = 60
+    hough_min_line_length: int = 50
+    hough_max_line_gap: int = 40
 
     lane_center_tolerance_px: int = 25
-    min_lines_required: int = 2
+    min_lines_required: int = 1
 
 
 @dataclass(frozen=True)
@@ -94,7 +96,9 @@ class NavigationConfig:
     caution_cm: float = _env_float("RASPBOT_CAUTION_CM", 20.0)
     max_valid_distance_cm: float = 500.0
 
+    # If no line is detected, either "slow_forward" or "stop".
     no_lane_behavior: str = "slow_forward"
+
     control_loop_sleep_sec: float = 0.05
 
 
