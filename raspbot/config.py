@@ -1,142 +1,77 @@
-from __future__ import annotations
+"""
+Configuration for Raspberry Pi 4B Yahboom Pi4WD white-line tracking car.
 
-import os
-from dataclasses import dataclass
-from typing import Tuple
+Start with default values.
+Tune only after camera/vision/motor tests pass.
+"""
 
+# -----------------------------
+# Camera settings
+# -----------------------------
 
-def _env_int(name: str, default: int) -> int:
-    value = os.getenv(name)
-    if value is None or value == "":
-        return default
-    return int(value)
+CAMERA_WIDTH = 320
+CAMERA_HEIGHT = 240
+CAMERA_FPS = 30
+USB_CAMERA_INDEX = 0
 
-
-def _env_float(name: str, default: float) -> float:
-    value = os.getenv(name)
-    if value is None or value == "":
-        return default
-    return float(value)
-
-
-@dataclass(frozen=True)
-class GPIOConfig:
-    """GPIO pin configuration.
-
-    Pin numbering uses GPIO.BOARD mode, matching the original prototype code.
-    """
-
-    trig_pin: int = 16
-    echo_pin: int = 18
-
-    left_ir_pin: int = 21
-    right_ir_pin: int = 19
-    ir_enable_pin: int = 22
+# Use only lower part of image.
+# 0.55 means ignore top 55%, use bottom 45%.
+ROI_TOP_RATIO = 0.55
 
 
-@dataclass(frozen=True)
-class CameraConfig:
-    width: int = 640
-    height: int = 480
-    format: str = "YUV420"
-    warmup_seconds: float = 1.0
+# -----------------------------
+# White line detection settings
+# -----------------------------
+# White in HSV:
+# - high V/value/brightness
+# - low S/saturation
+#
+# If white line is not detected, lower WHITE_VALUE_MIN.
+# If background is also detected, increase WHITE_VALUE_MIN.
+WHITE_VALUE_MIN = 180
 
-    @property
-    def size(self) -> Tuple[int, int]:
-        return (self.width, self.height)
+# If colored bright objects are detected, lower this.
+WHITE_SATURATION_MAX = 80
 
+# Ignore small noise.
+MIN_CONTOUR_AREA = 350
 
-@dataclass(frozen=True)
-class MotorConfig:
-    """Motor runtime tuning.
+# If line center is within this many pixels from frame center, go forward.
+CENTER_TOLERANCE_PX = 25
 
-    This project does NOT read YB_PCB_CAR_PATH from .env anymore.
-    The local driver is imported from:
-        robot_side/motor_driver/YB_Pcb_Car.py
-    """
-
-    forward_speed: int = _env_int("RASPBOT_FORWARD_SPEED", 30)
-    turn_speed: int = _env_int("RASPBOT_TURN_SPEED", 25)
-    slow_speed: int = _env_int("RASPBOT_SLOW_SPEED", 20)
-    max_speed: int = 100
+# Clean noisy mask.
+USE_MORPHOLOGY = True
 
 
-@dataclass(frozen=True)
-class LaneConfig:
-    # ------------------------------------------------------------
-    # White line HSV threshold
-    # White usually has LOW saturation and HIGH brightness/value.
-    # ------------------------------------------------------------
-    lower_white_h: int = 0
-    lower_white_s: int = 0
-    lower_white_v: int = 170
+# -----------------------------
+# Motor behavior
+# -----------------------------
 
-    upper_white_h: int = 180
-    upper_white_s: int = 80
-    upper_white_v: int = 255
+FORWARD_SPEED = 35
+TURN_SPEED = 30
+SEARCH_TURN_SPEED = 22
 
-    # ------------------------------------------------------------
-    # Green line HSV threshold
-    # Required by raspbot/vision/green_lane_detector.py
-    # ------------------------------------------------------------
-    lower_green_h: int = 35
-    lower_green_s: int = 40
-    lower_green_v: int = 40
+CONTROL_DELAY_SEC = 0.03
 
-    upper_green_h: int = 90
-    upper_green_s: int = 255
-    upper_green_v: int = 255
+# Safer default. If line is lost, car stops.
+# Set False only after the basic tracking works.
+STOP_WHEN_LINE_LOST = True
 
-    # ------------------------------------------------------------
-    # Shared mask cleanup
-    # ------------------------------------------------------------
-    morphology_kernel_size: int = 5
-
-    # ------------------------------------------------------------
-    # ROI shape
-    # Used by GreenLaneDetector.apply_roi()
-    # ------------------------------------------------------------
-    roi_top_ratio: float = 0.35
-    roi_left_top_ratio: float = 0.20
-    roi_right_top_ratio: float = 0.80
-
-    # This cuts out the center region.
-    # Useful if detecting left/right green lane borders.
-    center_cutout_left_ratio: float = 0.40
-    center_cutout_right_ratio: float = 0.60
-
-    # ------------------------------------------------------------
-    # Hough line detector settings
-    # ------------------------------------------------------------
-    hough_rho: int = 2
-    hough_theta_divisor: int = 180
-    hough_threshold: int = 60
-    hough_min_line_length: int = 50
-    hough_max_line_gap: int = 40
-
-    lane_center_tolerance_px: int = 25
-    min_lines_required: int = 1
-
-    # Optional compatibility field
-    min_contour_area: int = 300
+# If movement direction is wrong, switch these.
+INVERT_FORWARD = False
+INVERT_STEERING = False
 
 
-@dataclass(frozen=True)
-class NavigationConfig:
-    emergency_stop_cm: float = _env_float("RASPBOT_EMERGENCY_STOP_CM", 10.0)
-    caution_cm: float = _env_float("RASPBOT_CAUTION_CM", 20.0)
-    max_valid_distance_cm: float = 500.0
+# -----------------------------
+# Yahboom Pi4WD GPIO pins
+# Based on official 4.Code/python/CarRun.py
+# -----------------------------
 
-    # If no line is detected, either "slow_forward" or "stop".
-    no_lane_behavior: str = "slow_forward"
+IN1 = 20
+IN2 = 21
+IN3 = 19
+IN4 = 26
+ENA = 16
+ENB = 13
 
-    control_loop_sleep_sec: float = 0.05
-
-
-@dataclass(frozen=True)
-class AppConfig:
-    gpio: GPIOConfig = GPIOConfig()
-    camera: CameraConfig = CameraConfig()
-    motor: MotorConfig = MotorConfig()
-    lane: LaneConfig = LaneConfig()
-    navigation: NavigationConfig = NavigationConfig()
+PWM_FREQUENCY = 2000

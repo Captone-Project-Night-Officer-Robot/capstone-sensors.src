@@ -1,0 +1,109 @@
+"""
+Main app: follow a white line using Raspberry Pi camera.
+
+Examples:
+
+Pi camera:
+    python -m raspbot.apps.line_follow --camera picamera2
+
+USB camera:
+    python -m raspbot.apps.line_follow --camera usb --camera-index 0
+
+Safe debug mode, no motor movement:
+    python -m raspbot.apps.line_follow --camera picamera2 --dry-run --debug
+"""
+
+from __future__ import annotations
+
+import argparse
+import time
+
+import cv2
+
+import raspbot.config as cfg
+from raspbot.hardware.motor import MotorController
+from raspbot.vision.camera import create_camera
+from raspbot.vision.white_line_detector import WhiteLineDetector, draw_debug
+
+
+def decide_action(found: bool, offset_x: int | None) -> str:
+    if not found or offset_x is None:
+        return "lost"
+
+    if abs(offset_x) <= cfg.CENTER_TOLERANCE_PX:
+        return "forward"
+
+    if offset_x < 0:
+        return "left"
+
+    return "right"
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--camera", choices=["picamera2", "usb"], default="picamera2")
+    parser.add_argument("--camera-index", type=int, default=cfg.USB_CAMERA_INDEX)
+    parser.add_argument("--debug", action="store_true")
+    parser.add_argument("--dry-run", action="store_true")
+    args = parser.parse_args()
+
+    camera = create_camera(
+        camera_type=args.camera,
+        index=args.camera_index,
+        width=cfg.CAMERA_WIDTH,
+        height=cfg.CAMERA_HEIGHT,
+        fps=cfg.CAMERA_FPS,
+    )
+
+    motor = MotorController(dry_run=args.dry_run)
+    detector = WhiteLineDetector()
+
+    print("[app] White-line follower started.")
+    print("[app] Stop with Ctrl+C.")
+
+    if args.debug:
+        print("[app] Debug mode enabled. Press q to quit.")
+
+    try:
+        while True:
+            frame = camera.read()
+            detection = detector.detect(frame)
+
+            action = decide_action(detection.found, detection.offset_x)
+
+            if action == "forward":
+                motor.forward(cfg.FORWARD_SPEED)
+            elif action == "left":
+                motor.spin_left(cfg.TURN_SPEED)
+            elif action == "right":
+                motor.spin_right(cfg.TURN_SPEED)
+            else:
+                if cfg.STOP_WHEN_LINE_LOST:
+                    motor.stop()
+                else:
+                    motor.spin_left(cfg.SEARCH_TURN_SPEED)
+
+            if args.debug:
+                debug = draw_debug(frame, detection)
+
+                cv2.imshow("vision-test", debug)
+                cv2.imshow("white-line-mask", detection.mask)
+
+                key = cv2.waitKey(1) & 0xFF
+
+                if key == ord("q"):
+                    break
+
+            time.sleep(cfg.CONTROL_DELAY_SEC)
+
+    except KeyboardInterrupt:
+        print("\n[app] Ctrl+C received. Stopping.")
+    finally:
+        motor.safe_stop()
+        camera.release()
+        cv2.destroyAllWindows()
+        print("[app] Done.")
+
+
+if __name__ == "__main__":
+    main()
