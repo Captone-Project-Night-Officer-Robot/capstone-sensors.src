@@ -33,12 +33,11 @@ class MotorController:
             return
 
         try:
-            import YB_Pcb_Car  # type: ignore
+            from raspbot.hardware import YB_Pcb_Car  # type: ignore
         except Exception as exc:
             raise MotorDriverError(
                 "YB_Pcb_Car library not found.\n"
-                "Place YB_Pcb_Car.py at raspbot/hardware/YB_Pcb_Car.py "
-                "or install it on PYTHONPATH."
+                "Place YB_Pcb_Car.py at raspbot/hardware/YB_Pcb_Car.py."
             ) from exc
 
         self.car = YB_Pcb_Car.YB_Pcb_Car()
