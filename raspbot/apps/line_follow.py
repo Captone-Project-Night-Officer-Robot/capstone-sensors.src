@@ -16,6 +16,7 @@ Safe debug mode, no motor movement:
 from __future__ import annotations
 
 import argparse
+import os
 import time
 
 import cv2
@@ -24,6 +25,10 @@ import raspbot.config as cfg
 from raspbot.hardware.motor import MotorController
 from raspbot.vision.camera import create_camera
 from raspbot.vision.white_line_detector import WhiteLineDetector, draw_debug
+
+
+def _display_available() -> bool:
+    return bool(os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY"))
 
 
 def decide_action(found: bool, offset_x: int | None) -> str:
@@ -64,6 +69,9 @@ def main() -> None:
     if args.debug:
         print("[app] Debug mode enabled. Press q to quit.")
 
+    frame_idx = 0
+    has_display = args.debug and _display_available()
+
     try:
         while True:
             frame = camera.read()
@@ -83,7 +91,14 @@ def main() -> None:
                 else:
                     motor.spin_left(cfg.SEARCH_TURN_SPEED)
 
-            if args.debug:
+            if args.debug and frame_idx % 15 == 0:
+                print(
+                    f"[app] frame={frame_idx} found={detection.found} "
+                    f"offset={detection.offset_x} area={int(detection.area)} "
+                    f"action={action}"
+                )
+
+            if has_display:
                 debug = draw_debug(frame, detection)
 
                 cv2.imshow("vision-test", debug)
@@ -94,6 +109,7 @@ def main() -> None:
                 if key == ord("q"):
                     break
 
+            frame_idx += 1
             time.sleep(cfg.CONTROL_DELAY_SEC)
 
     except KeyboardInterrupt:
