@@ -21,10 +21,19 @@ def main() -> None:
     args = parser.parse_args()
 
     repo = Path(args.repo).expanduser()
-    car_run = repo / "4.Code" / "python" / "CarRun.py"
 
-    if not car_run.exists():
-        raise SystemExit(f"Could not find official CarRun.py at: {car_run}")
+    matches = sorted(repo.rglob("CarRun.py"))
+
+    if not matches:
+        raise SystemExit(f"Could not find any CarRun.py under: {repo}")
+
+    car_run = matches[0]
+
+    if len(matches) > 1:
+        print(f"Multiple CarRun.py files found, using first:")
+        for m in matches:
+            print(f"  {m}")
+        print()
 
     text = car_run.read_text(encoding="utf-8", errors="ignore")
 
