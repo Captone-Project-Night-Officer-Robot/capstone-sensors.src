@@ -53,8 +53,8 @@ USE_MORPHOLOGY = True
 # Motor behavior
 # -----------------------------
 
-FORWARD_SPEED = 35
-TURN_SPEED = 30
+FORWARD_SPEED = 30
+TURN_SPEED = 45
 SEARCH_TURN_SPEED = 22
 
 # PID gains for steering. The PID converts pixel offset (line_x - frame_x)
@@ -112,7 +112,7 @@ ULTRASONIC_TRIG = 23
 ULTRASONIC_ECHO = 24
 
 # Trigger avoidance when obstacle is closer than this (cm).
-AVOID_DISTANCE_CM = 20.0
+AVOID_DISTANCE_CM = 10.0
 
 # Background polling rate of the ultrasonic thread.
 ULTRASONIC_POLL_HZ = 20
@@ -121,8 +121,8 @@ ULTRASONIC_POLL_HZ = 20
 ULTRASONIC_TIMEOUT_SEC = 0.03
 
 # Discard readings outside this band — sensor is unreliable there.
-ULTRASONIC_MIN_CM = 2.0
-ULTRASONIC_MAX_CM = 400.0
+ULTRASONIC_MIN_CM = 3.0
+ULTRASONIC_MAX_CM = 200.0
 
 
 # -----------------------------
