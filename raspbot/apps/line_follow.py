@@ -31,6 +31,7 @@ from raspbot.hardware.ir_sensors import IRReading
 from raspbot.hardware.motor import MotorController
 from raspbot.hardware.pid import PIDController
 from raspbot.vision.camera import create_camera
+from raspbot.vision.mjpeg_server import MJPEGServer
 from raspbot.vision.white_line_detector import WhiteLineDetector, draw_debug
 
 
@@ -157,6 +158,13 @@ def main() -> None:
         action="store_true",
         help="Disable ultrasonic + IR obstacle avoidance.",
     )
+    parser.add_argument(
+        "--stream",
+        action="store_true",
+        help="Serve MJPEG of the debug view at http://<pi-ip>:<port>/",
+    )
+    parser.add_argument("--stream-port", type=int, default=8080)
+    parser.add_argument("--stream-fps", type=int, default=15)
     args = parser.parse_args()
 
     camera = create_camera(
@@ -182,6 +190,17 @@ def main() -> None:
     else:
         print("[app] Obstacle avoidance OFF.")
 
+    stream_server: MJPEGServer | None = None
+    if args.stream:
+        stream_server = MJPEGServer(
+            port=args.stream_port, fps_cap=args.stream_fps
+        )
+        stream_server.start()
+        print(
+            f"[app] MJPEG stream live: open http://<pi-ip>:{args.stream_port}/ "
+            "in a browser on your laptop."
+        )
+
     print("[app] White-line follower started.")
     print("[app] Stop with Ctrl+C.")
 
@@ -190,6 +209,7 @@ def main() -> None:
 
     frame_idx = 0
     has_display = args.debug and _display_available()
+    render_debug = has_display or stream_server is not None
 
     if has_display:
         for name in ("vision-test", "white-line-mask"):
@@ -240,16 +260,21 @@ def main() -> None:
                     f"action={action}{tail}"
                 )
 
-            if has_display:
+            if render_debug:
                 debug = draw_debug(frame, detection)
 
-                cv2.imshow("vision-test", debug)
-                cv2.imshow("white-line-mask", detection.mask)
+                if stream_server is not None:
+                    stream_server.push("main", debug)
+                    stream_server.push("mask", detection.mask)
 
-                key = cv2.waitKey(1) & 0xFF
+                if has_display:
+                    cv2.imshow("vision-test", debug)
+                    cv2.imshow("white-line-mask", detection.mask)
 
-                if key == ord("q"):
-                    break
+                    key = cv2.waitKey(1) & 0xFF
+
+                    if key == ord("q"):
+                        break
 
             frame_idx += 1
             time.sleep(cfg.CONTROL_DELAY_SEC)
@@ -257,6 +282,8 @@ def main() -> None:
     except KeyboardInterrupt:
         print("\n[app] Ctrl+C received. Stopping.")
     finally:
+        if stream_server is not None:
+            stream_server.stop()
         if avoider is not None:
             avoider.cleanup()
         motor.safe_stop()

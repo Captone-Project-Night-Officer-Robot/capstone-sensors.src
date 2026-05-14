@@ -68,7 +68,8 @@ capstone-sensors.src/
 │   │   └── avoider.py           # fuses sensors + override layer
 │   └── vision/
 │       ├── camera.py
-│       └── white_line_detector.py
+│       ├── white_line_detector.py
+│       └── mjpeg_server.py      # live debug view in a browser
 └── scripts/
     ├── camera_test.py
     ├── clone_yahboom_repo.sh
@@ -285,6 +286,88 @@ Stop:
 ```bash
 Ctrl+C
 ```
+
+---
+
+# Step 8: Watch the camera from your laptop (MJPEG stream)
+
+When you SSH into the Pi headless, `cv2.imshow` can't show anything on your
+laptop. The app can instead serve the debug view over HTTP so you can open it
+in any browser.
+
+## Start with streaming enabled
+
+On the Pi (over SSH):
+
+```bash
+source .venv/bin/activate
+python -m raspbot.apps.line_follow --camera picamera2 --stream
+```
+
+You will see:
+
+```text
+[app] MJPEG stream live: open http://<pi-ip>:8080/ in a browser on your laptop.
+```
+
+## Find the Pi's IP
+
+On the Pi:
+
+```bash
+hostname -I
+```
+
+Example output:
+
+```text
+192.168.1.42
+```
+
+## Open it on your laptop
+
+In any browser:
+
+```text
+http://192.168.1.42:8080/
+```
+
+You'll see two side-by-side feeds:
+
+```text
+left   → annotated video (line center, deadband, action overlay)
+right  → white-line mask (what the detector sees)
+```
+
+Direct stream URLs (useful for OBS / VLC / `curl`):
+
+```text
+http://192.168.1.42:8080/stream.mjpg   → annotated
+http://192.168.1.42:8080/mask.mjpg     → mask
+```
+
+## Options
+
+```bash
+# Different port:
+python -m raspbot.apps.line_follow --camera picamera2 --stream --stream-port 9000
+
+# Reduce bandwidth (drop stream FPS):
+python -m raspbot.apps.line_follow --camera picamera2 --stream --stream-fps 8
+
+# Stream + console debug logs at the same time:
+python -m raspbot.apps.line_follow --camera picamera2 --stream --debug
+```
+
+## Notes
+
+- The stream is opt-in. Skip `--stream` for competition runs.
+- The Pi and your laptop must be on the same Wi-Fi network.
+- The control loop runs at full speed regardless of `--stream-fps`; the cap
+  only limits how often frames are pushed to viewers.
+- Multiple browser tabs / viewers can connect simultaneously.
+
+---
 
 ---
 
@@ -576,6 +659,7 @@ python -m scripts.avoid_test
 python -m scripts.motor_test
 python -m raspbot.apps.line_follow --camera picamera2 --dry-run --debug
 python -m raspbot.apps.line_follow --camera picamera2
+python -m raspbot.apps.line_follow --camera picamera2 --stream   # view from laptop
 ```
 
 Do not run the real car before camera, vision, sensor, and motor tests pass.
