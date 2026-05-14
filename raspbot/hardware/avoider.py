@@ -30,7 +30,9 @@ class Avoider:
     def __init__(self, simulate: bool = False) -> None:
         self.simulate = simulate
         self.ultrasonic = UltrasonicSensor(simulate=simulate)
-        self.ir = IRSensors(simulate=simulate)
+        # If IR is disabled in config, run the IR module in simulate mode so
+        # it always reports "not blocked".
+        self.ir = IRSensors(simulate=simulate or not cfg.IR_ENABLED)
         self.ultrasonic.start()
 
     def evaluate(self) -> AvoidDecision:

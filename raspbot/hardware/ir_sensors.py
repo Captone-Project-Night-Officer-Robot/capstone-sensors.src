@@ -41,8 +41,10 @@ class IRSensors:
         self._gpio = GPIO
         GPIO.setmode(GPIO.BCM)
         GPIO.setwarnings(False)
-        GPIO.setup(cfg.IR_LEFT_PIN, GPIO.IN)
-        GPIO.setup(cfg.IR_RIGHT_PIN, GPIO.IN)
+        # Pull-up so an unwired pin reads HIGH (= no obstacle) instead of
+        # floating LOW and constantly triggering avoidance.
+        GPIO.setup(cfg.IR_LEFT_PIN, GPIO.IN, pull_up_down=GPIO.PUD_UP)
+        GPIO.setup(cfg.IR_RIGHT_PIN, GPIO.IN, pull_up_down=GPIO.PUD_UP)
 
         if cfg.IR_POWER_PIN is not None:
             GPIO.setup(cfg.IR_POWER_PIN, GPIO.OUT, initial=GPIO.HIGH)

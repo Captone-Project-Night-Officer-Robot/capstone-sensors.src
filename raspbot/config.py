@@ -105,6 +105,10 @@ ULTRASONIC_MAX_CM = 400.0
 # BCM numbering. BCM 9 = BOARD 21, BCM 10 = BOARD 19, BCM 25 = BOARD 22.
 # -----------------------------
 
+# Set IR_ENABLED = False if the IR sensors are not wired on your board,
+# or while debugging ultrasonic alone.
+IR_ENABLED = True
+
 IR_LEFT_PIN = 9
 IR_RIGHT_PIN = 10
 
