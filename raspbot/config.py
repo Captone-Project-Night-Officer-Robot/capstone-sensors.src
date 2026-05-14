@@ -107,7 +107,7 @@ ULTRASONIC_MAX_CM = 400.0
 
 # Set IR_ENABLED = False if the IR sensors are not wired on your board,
 # or while debugging ultrasonic alone.
-IR_ENABLED = True
+IR_ENABLED = False
 
 IR_LEFT_PIN = 9
 IR_RIGHT_PIN = 10
