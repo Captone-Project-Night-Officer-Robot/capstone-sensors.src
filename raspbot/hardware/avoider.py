@@ -36,17 +36,20 @@ class Avoider:
         self.ultrasonic.start()
 
     def evaluate(self) -> AvoidDecision:
+        """Hard front-safety check. Triggers only on ultrasonic distance.
+
+        IR sensors are still read so callers can use them for line-lost
+        navigation, but they no longer fire the emergency stop/spin maneuver.
+        """
         distance = self.ultrasonic.latest_cm()
         ir = self.ir.read()
 
         too_close = distance < cfg.AVOID_DISTANCE_CM
-        ir_triggered = ir.any_blocked
 
-        if not (too_close or ir_triggered):
+        if not too_close:
             return AvoidDecision(False, distance, ir, "none", "clear")
 
-        # Pick the spin direction: turn away from whichever IR is blocked.
-        # If only ultrasonic fired (or both IR fired), default to right.
+        # Use IR to bias the spin direction — turn away from a blocked side.
         if ir.left_blocked and not ir.right_blocked:
             direction = "right"
         elif ir.right_blocked and not ir.left_blocked:
@@ -54,14 +57,10 @@ class Avoider:
         else:
             direction = "right"
 
-        if too_close and ir_triggered:
-            reason = "distance+ir"
-        elif too_close:
-            reason = "distance"
-        else:
-            reason = "ir"
+        return AvoidDecision(True, distance, ir, direction, "distance")
 
-        return AvoidDecision(True, distance, ir, direction, reason)
+    def read_ir(self) -> IRReading:
+        return self.ir.read()
 
     def execute(self, motor: MotorController, decision: AvoidDecision) -> None:
         motor.stop()

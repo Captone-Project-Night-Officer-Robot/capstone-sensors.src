@@ -27,6 +27,7 @@ import cv2
 
 import raspbot.config as cfg
 from raspbot.hardware.avoider import Avoider
+from raspbot.hardware.ir_sensors import IRReading
 from raspbot.hardware.motor import MotorController
 from raspbot.vision.camera import create_camera
 from raspbot.vision.white_line_detector import WhiteLineDetector, draw_debug
@@ -83,6 +84,37 @@ class LostLineSearcher:
             motor.spin_left(cfg.SEARCH_TURN_SPEED)
 
         return self._direction
+
+
+def handle_lost_line(
+    motor: MotorController,
+    searcher: LostLineSearcher,
+    avoider: Avoider | None,
+) -> str:
+    """Decide motion when the white line is not visible.
+
+    Priority:
+      1. If IR sensors report an obstacle, turn away from it.
+      2. Otherwise, continue the left-right sweep search.
+    """
+    ir: IRReading = (
+        avoider.read_ir() if (avoider is not None and cfg.IR_ENABLED)
+        else IRReading(False, False)
+    )
+
+    if ir.left_blocked and ir.right_blocked:
+        motor.spin_right(cfg.SEARCH_TURN_SPEED)
+        return "ir-both -> spin right"
+
+    if ir.left_blocked:
+        motor.spin_right(cfg.SEARCH_TURN_SPEED)
+        return "ir-left -> spin right"
+
+    if ir.right_blocked:
+        motor.spin_left(cfg.SEARCH_TURN_SPEED)
+        return "ir-right -> spin left"
+
+    return f"sweep -> spin {searcher.step(motor)}"
 
 
 def steering_speeds(offset_x: int) -> tuple[int, int]:
@@ -149,6 +181,11 @@ def main() -> None:
     frame_idx = 0
     has_display = args.debug and _display_available()
 
+    if has_display:
+        for name in ("vision-test", "white-line-mask"):
+            cv2.namedWindow(name, cv2.WINDOW_NORMAL)
+            cv2.resizeWindow(name, cfg.DEBUG_WINDOW_WIDTH, cfg.DEBUG_WINDOW_HEIGHT)
+
     try:
         while True:
             frame = camera.read()
@@ -172,11 +209,12 @@ def main() -> None:
 
             action = decide_action(detection.found, detection.offset_x)
 
+            lost_info = ""
             if action == "lost":
                 if cfg.STOP_WHEN_LINE_LOST:
                     motor.stop()
                 else:
-                    searcher.step(motor)
+                    lost_info = handle_lost_line(motor, searcher, avoider)
             else:
                 searcher.reset()
                 # Proportional differential steering for forward/left/right.
@@ -184,10 +222,11 @@ def main() -> None:
                 motor.differential(left_speed, right_speed)
 
             if args.debug and frame_idx % 15 == 0:
+                tail = f" {lost_info}" if lost_info else ""
                 print(
                     f"[app] frame={frame_idx} found={detection.found} "
                     f"offset={detection.offset_x} area={int(detection.area)} "
-                    f"action={action}"
+                    f"action={action}{tail}"
                 )
 
             if has_display:

@@ -14,6 +14,12 @@ CAMERA_HEIGHT = 240
 CAMERA_FPS = 30
 USB_CAMERA_INDEX = 0
 
+# Size of the debug visualisation windows (pixels). The camera frame is
+# upscaled to this size for display only — control logic still runs on the
+# original CAMERA_WIDTH x CAMERA_HEIGHT frame.
+DEBUG_WINDOW_WIDTH = 800
+DEBUG_WINDOW_HEIGHT = 600
+
 # Use only lower part of image.
 # 0.55 means ignore top 55%, use bottom 45%.
 ROI_TOP_RATIO = 0.55
