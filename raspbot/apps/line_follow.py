@@ -57,6 +57,25 @@ def decide_action(found: bool, offset_x: int | None) -> str:
     return "right"
 
 
+def steering_speeds(offset_x: int) -> tuple[int, int]:
+    """Proportional differential drive. Returns (left_speed, right_speed)."""
+    base = cfg.FORWARD_SPEED
+    deadband = cfg.CENTER_TOLERANCE_PX
+
+    if abs(offset_x) <= deadband:
+        return (base, base)
+
+    correction = int((abs(offset_x) - deadband) * cfg.STEERING_GAIN)
+    correction = min(cfg.STEERING_MAX_REDUCTION, correction)
+
+    if offset_x < 0:
+        # Line is left of center → turn left → slow LEFT wheel.
+        return (max(0, base - correction), base)
+
+    # Line is right of center → turn right → slow RIGHT wheel.
+    return (base, max(0, base - correction))
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--camera", choices=["picamera2", "usb"], default="picamera2")
@@ -124,17 +143,15 @@ def main() -> None:
 
             action = decide_action(detection.found, detection.offset_x)
 
-            if action == "forward":
-                motor.forward(cfg.FORWARD_SPEED)
-            elif action == "left":
-                motor.spin_left(cfg.TURN_SPEED)
-            elif action == "right":
-                motor.spin_right(cfg.TURN_SPEED)
-            else:
+            if action == "lost":
                 if cfg.STOP_WHEN_LINE_LOST:
                     motor.stop()
                 else:
                     motor.spin_left(cfg.SEARCH_TURN_SPEED)
+            else:
+                # Proportional differential steering for forward/left/right.
+                left_speed, right_speed = steering_speeds(detection.offset_x)
+                motor.differential(left_speed, right_speed)
 
             if args.debug and frame_idx % 15 == 0:
                 print(

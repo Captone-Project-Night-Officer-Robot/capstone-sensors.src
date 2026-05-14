@@ -56,4 +56,14 @@ class IRSensors:
         GPIO = self._gpio
         left_raw = GPIO.input(cfg.IR_LEFT_PIN)
         right_raw = GPIO.input(cfg.IR_RIGHT_PIN)
-        return IRReading(left_blocked=not left_raw, right_blocked=not right_raw)
+
+        if cfg.IR_ACTIVE_LOW:
+            return IRReading(left_blocked=not left_raw, right_blocked=not right_raw)
+        return IRReading(left_blocked=bool(left_raw), right_blocked=bool(right_raw))
+
+    def read_raw(self) -> tuple[int, int]:
+        """Returns the raw pin levels (left, right). For debugging only."""
+        if self.simulate or self._gpio is None:
+            return (1, 1)
+        GPIO = self._gpio
+        return (GPIO.input(cfg.IR_LEFT_PIN), GPIO.input(cfg.IR_RIGHT_PIN))

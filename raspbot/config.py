@@ -51,6 +51,15 @@ FORWARD_SPEED = 35
 TURN_SPEED = 30
 SEARCH_TURN_SPEED = 22
 
+# Proportional steering (differential drive). Replaces the old binary
+# spin-left/spin-right behavior so the car curves smoothly instead of
+# zig-zagging.
+#
+# Inside-wheel slowdown = (|offset_px| - CENTER_TOLERANCE_PX) * STEERING_GAIN,
+# clamped to STEERING_MAX_REDUCTION.
+STEERING_GAIN = 0.5
+STEERING_MAX_REDUCTION = 30
+
 CONTROL_DELAY_SEC = 0.03
 
 # Safer default. If line is lost, car stops.
@@ -115,6 +124,11 @@ IR_RIGHT_PIN = 10
 # Some Yahboom boards expose an "IR enable" pin that must be driven HIGH.
 # Set to None if your board does not have one.
 IR_POWER_PIN = 25
+
+# Yahboom's official sensors are active-LOW (pin reads LOW when obstacle
+# detected). Some 3rd-party IR modules are active-HIGH. Flip this if your
+# sensors report "blocked" when nothing is in front of them.
+IR_ACTIVE_LOW = True
 
 
 # -----------------------------

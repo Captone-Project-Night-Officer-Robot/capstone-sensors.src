@@ -39,11 +39,13 @@ def main() -> None:
         while True:
             cm = ultrasonic.latest_cm()
             r = ir.read()
+            raw_l, raw_r = ir.read_raw()
             cm_str = "  inf" if cm == float("inf") else f"{cm:6.1f}"
             flag = "BLOCKED" if (cm < cfg.AVOID_DISTANCE_CM or r.any_blocked) else "clear  "
             print(
                 f"{flag}  distance={cm_str} cm   "
-                f"IR L={int(r.left_blocked)} R={int(r.right_blocked)}"
+                f"IR raw=(L={raw_l},R={raw_r})   "
+                f"blocked=(L={int(r.left_blocked)},R={int(r.right_blocked)})"
             )
             time.sleep(0.2)
     except KeyboardInterrupt:
