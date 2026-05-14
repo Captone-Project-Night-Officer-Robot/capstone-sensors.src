@@ -62,9 +62,13 @@ STEERING_MAX_REDUCTION = 30
 
 CONTROL_DELAY_SEC = 0.03
 
-# Safer default. If line is lost, car stops.
-# Set False only after the basic tracking works.
-STOP_WHEN_LINE_LOST = True
+# If True: stop the car when the line is lost.
+# If False: sweep right → left → right → left until the line is found again.
+STOP_WHEN_LINE_LOST = False
+
+# Duration of each sweep direction before reversing (seconds).
+# Lower = tighter sweep, higher = wider arc.
+SEARCH_SWEEP_SEC = 0.4
 
 # If movement direction is wrong, switch these.
 INVERT_FORWARD = False

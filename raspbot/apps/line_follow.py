@@ -57,6 +57,34 @@ def decide_action(found: bool, offset_x: int | None) -> str:
     return "right"
 
 
+class LostLineSearcher:
+    """Sweeps right → left → right → left while the line is missing."""
+
+    def __init__(self) -> None:
+        self._direction = "right"
+        self._phase_start: float | None = None
+
+    def reset(self) -> None:
+        self._direction = "right"
+        self._phase_start = None
+
+    def step(self, motor: MotorController) -> str:
+        now = time.monotonic()
+
+        if self._phase_start is None:
+            self._phase_start = now
+        elif now - self._phase_start >= cfg.SEARCH_SWEEP_SEC:
+            self._direction = "left" if self._direction == "right" else "right"
+            self._phase_start = now
+
+        if self._direction == "right":
+            motor.spin_right(cfg.SEARCH_TURN_SPEED)
+        else:
+            motor.spin_left(cfg.SEARCH_TURN_SPEED)
+
+        return self._direction
+
+
 def steering_speeds(offset_x: int) -> tuple[int, int]:
     """Proportional differential drive. Returns (left_speed, right_speed)."""
     base = cfg.FORWARD_SPEED
@@ -99,6 +127,7 @@ def main() -> None:
 
     motor = MotorController(dry_run=args.dry_run)
     detector = WhiteLineDetector()
+    searcher = LostLineSearcher()
 
     avoider: Avoider | None = None
     if cfg.AVOIDANCE_ENABLED and not args.no_avoidance:
@@ -147,8 +176,9 @@ def main() -> None:
                 if cfg.STOP_WHEN_LINE_LOST:
                     motor.stop()
                 else:
-                    motor.spin_left(cfg.SEARCH_TURN_SPEED)
+                    searcher.step(motor)
             else:
+                searcher.reset()
                 # Proportional differential steering for forward/left/right.
                 left_speed, right_speed = steering_speeds(detection.offset_x)
                 motor.differential(left_speed, right_speed)
