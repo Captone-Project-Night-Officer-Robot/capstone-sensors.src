@@ -25,15 +25,25 @@ ENB = 13
 
 # What this project does
 
-The car follows a **white line / white tape** on a darker floor.
+The car follows a **white line / white tape** on a darker floor, and
+**avoids obstacles** using ultrasonic + dual IR sensors as an override layer.
 
 ```text
-Camera frame
-→ use lower part of image
-→ detect white line
-→ find center of white line
-→ compare with camera center
-→ move forward / turn left / turn right / stop
+Camera frame ─→ detect white line ─→ line action ─┐
+                                                  ├─→ motor
+Ultrasonic + IR ─→ avoid decision ────────────────┘
+                  (overrides line action when blocked)
+```
+
+Per frame:
+
+```text
+1. Read ultrasonic distance (latest sample from background thread)
+2. Read both IR sensors
+3. If distance < AVOID_DISTANCE_CM or either IR is blocked:
+       stop → short reverse → spin away from obstacle → resume
+   else:
+       run normal white-line tracking
 ```
 
 ---
@@ -51,7 +61,11 @@ capstone-sensors.src/
 │   ├── apps/
 │   │   └── line_follow.py
 │   ├── hardware/
-│   │   └── motor.py
+│   │   ├── motor.py
+│   │   ├── YB_Pcb_Car.py
+│   │   ├── ultrasonic.py        # HC-SR04, background-thread polling
+│   │   ├── ir_sensors.py        # dual IR (active-low)
+│   │   └── avoider.py           # fuses sensors + override layer
 │   └── vision/
 │       ├── camera.py
 │       └── white_line_detector.py
@@ -61,7 +75,8 @@ capstone-sensors.src/
     ├── install_pi.sh
     ├── motor_test.py
     ├── show_yahboom_pins.py
-    └── vision_test.py
+    ├── vision_test.py
+    └── avoid_test.py            # sensors-only, no motors
 ```
 
 ---
@@ -151,6 +166,34 @@ If the white line is not detected, tune `raspbot/config.py`.
 
 ---
 
+# Step 4b: Test obstacle sensors only
+
+This does **not** move motors. Confirms wiring of HC-SR04 + IR sensors.
+
+```bash
+source .venv/bin/activate
+python -m scripts.avoid_test
+```
+
+Expected output every 0.2 s:
+
+```text
+clear    distance=  87.4 cm   IR L=0 R=0
+clear    distance=  42.1 cm   IR L=0 R=0
+BLOCKED  distance=  12.8 cm   IR L=0 R=0
+BLOCKED  distance=  35.7 cm   IR L=1 R=0
+```
+
+Quick sanity checks:
+- Wave your hand 10 cm in front of the sensor → `BLOCKED ... distance=~10 cm`
+- Cover the **left** IR → `IR L=1 R=0`
+- Cover the **right** IR → `IR L=0 R=1`
+
+If `distance` is always `inf`, check `TRIG`/`ECHO` wiring or BCM pin numbers in `config.py`.
+If IR `L`/`R` are stuck on `1`, your sensor pots are too sensitive — turn them down.
+
+---
+
 # Step 5: Test motors only
 
 Put the car on a box/stand so wheels do not touch the floor.
@@ -229,6 +272,12 @@ Put the car on the white-line track.
 ```bash
 source .venv/bin/activate
 python -m raspbot.apps.line_follow --camera picamera2
+```
+
+If obstacle sensors are wired, avoidance is **on by default**. To bypass it:
+
+```bash
+python -m raspbot.apps.line_follow --camera picamera2 --no-avoidance
 ```
 
 Stop:
@@ -450,6 +499,69 @@ If search mode is enabled, the car slowly rotates when it loses the line.
 
 ---
 
+# Obstacle avoidance tuning
+
+All knobs live in `raspbot/config.py`.
+
+## Pins (BCM numbering)
+
+```python
+ULTRASONIC_TRIG = 23   # BOARD 16
+ULTRASONIC_ECHO = 24   # BOARD 18
+IR_LEFT_PIN     = 9    # BOARD 21
+IR_RIGHT_PIN    = 10   # BOARD 19
+IR_POWER_PIN    = 25   # BOARD 22  (set None if your board has no enable pin)
+```
+
+These match the Yahboom Raspbot hardware wiring used in courses 04–06.
+
+## Thresholds
+
+```python
+AVOID_DISTANCE_CM   = 20.0   # closer than this → trigger avoidance
+ULTRASONIC_POLL_HZ  = 20     # background sampling rate
+```
+
+Car stops too late → increase `AVOID_DISTANCE_CM` to 25–30.
+Car twitches on every wall → decrease to 12–15.
+
+## Maneuver
+
+```python
+AVOID_BACKUP_SEC   = 0.15
+AVOID_BACKUP_SPEED = 30
+AVOID_SPIN_SEC     = 0.45
+AVOID_SPIN_SPEED   = 35
+```
+
+Spin doesn't clear the obstacle → increase `AVOID_SPIN_SEC` to 0.7–1.0.
+Car over-rotates and loses the line → decrease `AVOID_SPIN_SEC`.
+
+## Switches
+
+```python
+AVOIDANCE_ENABLED = True
+```
+
+Set `False` to globally disable (or pass `--no-avoidance` on the CLI).
+
+## How it integrates
+
+`avoider.evaluate()` runs **before** the line-follow action each frame:
+
+```text
+distance < AVOID_DISTANCE_CM  → blocked
+left IR blocked only          → spin right
+right IR blocked only         → spin left
+both IR / ultrasonic only     → spin right (default)
+```
+
+When blocked, the avoider runs a small maneuver (~0.6 s total) and the next
+frame resumes line-following. The camera is not read during the maneuver —
+that's intentional.
+
+---
+
 # Recommended first run order
 
 Run in this exact order:
@@ -460,9 +572,10 @@ source .venv/bin/activate
 
 python -m scripts.camera_test --camera picamera2
 python -m scripts.vision_test --camera picamera2
+python -m scripts.avoid_test
 python -m scripts.motor_test
 python -m raspbot.apps.line_follow --camera picamera2 --dry-run --debug
 python -m raspbot.apps.line_follow --camera picamera2
 ```
 
-Do not run the real car before camera, vision, and motor tests pass.
+Do not run the real car before camera, vision, sensor, and motor tests pass.

@@ -14,6 +14,12 @@ CAMERA_HEIGHT = 240
 CAMERA_FPS = 30
 USB_CAMERA_INDEX = 0
 
+# Size of the debug visualisation windows (pixels). The camera frame is
+# upscaled to this size for display only — control logic still runs on the
+# original CAMERA_WIDTH x CAMERA_HEIGHT frame.
+DEBUG_WINDOW_WIDTH = 800
+DEBUG_WINDOW_HEIGHT = 600
+
 # Use only lower part of image.
 # 0.55 means ignore top 55%, use bottom 45%.
 ROI_TOP_RATIO = 0.55
@@ -51,11 +57,30 @@ FORWARD_SPEED = 35
 TURN_SPEED = 30
 SEARCH_TURN_SPEED = 22
 
+# PID gains for steering. The PID converts pixel offset (line_x - frame_x)
+# into a wheel-speed correction.
+#
+# Tuning order:
+#   1. Set KI=KD=0. Raise KP until the car holds the line but slightly wobbles.
+#   2. Add KD to damp the wobble (start small; high KD makes it twitchy).
+#   3. Only add KI if there's persistent off-center drift on straight lines.
+#
+# Output is clamped to ±STEERING_PID_OUTPUT_LIMIT (wheel-speed units, 0-100).
+STEERING_PID_KP = 0.30
+STEERING_PID_KI = 0.0
+STEERING_PID_KD = 0.05
+STEERING_PID_OUTPUT_LIMIT = 35
+STEERING_PID_INTEGRAL_LIMIT = 200
+
 CONTROL_DELAY_SEC = 0.03
 
-# Safer default. If line is lost, car stops.
-# Set False only after the basic tracking works.
-STOP_WHEN_LINE_LOST = True
+# If True: stop the car when the line is lost.
+# If False: sweep right → left → right → left until the line is found again.
+STOP_WHEN_LINE_LOST = False
+
+# Duration of each sweep direction before reversing (seconds).
+# Lower = tighter sweep, higher = wider arc.
+SEARCH_SWEEP_SEC = 0.4
 
 # If movement direction is wrong, switch these.
 INVERT_FORWARD = False
@@ -75,3 +100,64 @@ ENA = 16
 ENB = 13
 
 PWM_FREQUENCY = 2000
+
+
+# -----------------------------
+# Ultrasonic obstacle sensor (HC-SR04)
+# BCM numbering. BCM 23 = BOARD 16, BCM 24 = BOARD 18
+# (matches Yahboom Raspbot hardware wiring).
+# -----------------------------
+
+ULTRASONIC_TRIG = 23
+ULTRASONIC_ECHO = 24
+
+# Trigger avoidance when obstacle is closer than this (cm).
+AVOID_DISTANCE_CM = 20.0
+
+# Background polling rate of the ultrasonic thread.
+ULTRASONIC_POLL_HZ = 20
+
+# Echo timeout. Longer = more tolerant of slow returns, but slows the poll loop.
+ULTRASONIC_TIMEOUT_SEC = 0.03
+
+# Discard readings outside this band — sensor is unreliable there.
+ULTRASONIC_MIN_CM = 2.0
+ULTRASONIC_MAX_CM = 400.0
+
+
+# -----------------------------
+# IR obstacle sensors (digital, active-low: LOW = obstacle present)
+# BCM numbering. BCM 9 = BOARD 21, BCM 10 = BOARD 19, BCM 25 = BOARD 22.
+# -----------------------------
+
+# Set IR_ENABLED = False if the IR sensors are not wired on your board,
+# or while debugging ultrasonic alone.
+IR_ENABLED = False
+
+IR_LEFT_PIN = 9
+IR_RIGHT_PIN = 10
+
+# Some Yahboom boards expose an "IR enable" pin that must be driven HIGH.
+# Set to None if your board does not have one.
+IR_POWER_PIN = 25
+
+# Yahboom's official sensors are active-LOW (pin reads LOW when obstacle
+# detected). Some 3rd-party IR modules are active-HIGH. Flip this if your
+# sensors report "blocked" when nothing is in front of them.
+IR_ACTIVE_LOW = True
+
+
+# -----------------------------
+# Avoidance behavior
+# -----------------------------
+
+# Master switch — set False to skip sensor init / avoidance entirely.
+AVOIDANCE_ENABLED = True
+
+# Short reverse before spin — helps unstick from a wall.
+AVOID_BACKUP_SEC = 0.15
+AVOID_BACKUP_SPEED = 30
+
+# Spin duration and speed when avoiding.
+AVOID_SPIN_SEC = 0.45
+AVOID_SPIN_SPEED = 35

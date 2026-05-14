@@ -79,6 +79,24 @@ class MotorController:
             return self.spin_left_no_invert(speed)
         self.spin_right_no_invert(speed)
 
+    def differential(self, left_speed: int, right_speed: int) -> None:
+        """Drive both wheels forward at independent speeds (smooth steering)."""
+        if cfg.INVERT_STEERING:
+            left_speed, right_speed = right_speed, left_speed
+
+        sl = _scale_speed(left_speed)
+        sr = _scale_speed(right_speed)
+
+        if self.dry_run:
+            print(f"[motor] differential L={left_speed} R={right_speed}")
+            return
+
+        assert self.car is not None
+        if cfg.INVERT_FORWARD:
+            self.car.Car_Back(sl, sr)
+        else:
+            self.car.Car_Run(sl, sr)
+
     def spin_left_no_invert(self, speed: int) -> None:
         s = _scale_speed(speed)
         if self.dry_run:
