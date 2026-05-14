@@ -57,14 +57,20 @@ FORWARD_SPEED = 35
 TURN_SPEED = 30
 SEARCH_TURN_SPEED = 22
 
-# Proportional steering (differential drive). Replaces the old binary
-# spin-left/spin-right behavior so the car curves smoothly instead of
-# zig-zagging.
+# PID gains for steering. The PID converts pixel offset (line_x - frame_x)
+# into a wheel-speed correction.
 #
-# Inside-wheel slowdown = (|offset_px| - CENTER_TOLERANCE_PX) * STEERING_GAIN,
-# clamped to STEERING_MAX_REDUCTION.
-STEERING_GAIN = 0.5
-STEERING_MAX_REDUCTION = 30
+# Tuning order:
+#   1. Set KI=KD=0. Raise KP until the car holds the line but slightly wobbles.
+#   2. Add KD to damp the wobble (start small; high KD makes it twitchy).
+#   3. Only add KI if there's persistent off-center drift on straight lines.
+#
+# Output is clamped to ±STEERING_PID_OUTPUT_LIMIT (wheel-speed units, 0-100).
+STEERING_PID_KP = 0.30
+STEERING_PID_KI = 0.0
+STEERING_PID_KD = 0.05
+STEERING_PID_OUTPUT_LIMIT = 35
+STEERING_PID_INTEGRAL_LIMIT = 200
 
 CONTROL_DELAY_SEC = 0.03
 

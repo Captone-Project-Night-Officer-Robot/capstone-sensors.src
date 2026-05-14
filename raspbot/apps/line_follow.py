@@ -29,8 +29,18 @@ import raspbot.config as cfg
 from raspbot.hardware.avoider import Avoider
 from raspbot.hardware.ir_sensors import IRReading
 from raspbot.hardware.motor import MotorController
+from raspbot.hardware.pid import PIDController
 from raspbot.vision.camera import create_camera
 from raspbot.vision.white_line_detector import WhiteLineDetector, draw_debug
+
+
+steering_pid = PIDController(
+    kp=cfg.STEERING_PID_KP,
+    ki=cfg.STEERING_PID_KI,
+    kd=cfg.STEERING_PID_KD,
+    output_limit=cfg.STEERING_PID_OUTPUT_LIMIT,
+    integral_limit=cfg.STEERING_PID_INTEGRAL_LIMIT,
+)
 
 
 def _display_available() -> bool:
@@ -118,22 +128,22 @@ def handle_lost_line(
 
 
 def steering_speeds(offset_x: int) -> tuple[int, int]:
-    """Proportional differential drive. Returns (left_speed, right_speed)."""
+    """PID-driven differential drive. Returns (left_speed, right_speed)."""
     base = cfg.FORWARD_SPEED
     deadband = cfg.CENTER_TOLERANCE_PX
 
-    if abs(offset_x) <= deadband:
-        return (base, base)
+    # Inside the deadband, drive straight but still feed 0 into the PID so the
+    # derivative term doesn't see a discontinuity when we cross the boundary.
+    error = 0.0 if abs(offset_x) <= deadband else float(offset_x)
 
-    correction = int((abs(offset_x) - deadband) * cfg.STEERING_GAIN)
-    correction = min(cfg.STEERING_MAX_REDUCTION, correction)
+    correction = int(steering_pid.update(error))
 
-    if offset_x < 0:
-        # Line is left of center → turn left → slow LEFT wheel.
-        return (max(0, base - correction), base)
+    if correction >= 0:
+        # offset positive → line is right of center → slow RIGHT wheel.
+        return (base, max(0, base - correction))
 
-    # Line is right of center → turn right → slow RIGHT wheel.
-    return (base, max(0, base - correction))
+    # offset negative → line is left of center → slow LEFT wheel.
+    return (max(0, base + correction), base)
 
 
 def main() -> None:
@@ -211,13 +221,14 @@ def main() -> None:
 
             lost_info = ""
             if action == "lost":
+                # Reset PID so stale state doesn't cause a jerk on reacquire.
+                steering_pid.reset()
                 if cfg.STOP_WHEN_LINE_LOST:
                     motor.stop()
                 else:
                     lost_info = handle_lost_line(motor, searcher, avoider)
             else:
                 searcher.reset()
-                # Proportional differential steering for forward/left/right.
                 left_speed, right_speed = steering_speeds(detection.offset_x)
                 motor.differential(left_speed, right_speed)
 
