@@ -69,7 +69,8 @@ capstone-sensors.src/
 │   └── vision/
 │       ├── camera.py
 │       ├── white_line_detector.py
-│       └── mjpeg_server.py      # live debug view in a browser
+│       ├── mjpeg_server.py      # live debug view in a browser
+│       └── fall_detector.py     # USB camera -> remote YOLO server
 └── scripts/
     ├── camera_test.py
     ├── clone_yahboom_repo.sh
@@ -369,6 +370,164 @@ python -m raspbot.apps.line_follow --camera picamera2 --stream --debug
 
 ---
 
+# Step 9: Run with remote fall detection
+
+This stops the car whenever a connected USB camera (the second camera on the
+car, pointed at people) sees someone falling. YOLO inference runs **on your
+laptop**, not on the Pi — far faster than running it on the Pi 4B itself.
+
+## How it works
+
+```text
+Pi camera  ─┐
+            ├─→  line-follow + obstacle avoidance + motors (main thread)
+Sensors    ─┘                ▲
+                             │  stop while falling=True
+USB camera ─→ JPEG ─HTTP─→ Laptop YOLO server ─JSON─→ Pi (background thread)
+                             │
+                       /fall.mjpg ─→ laptop browser
+```
+
+## A. Start the inference server on your laptop
+
+In **`capstone-falldetection.src`** (on the laptop, not the Pi):
+
+```bash
+cd capstone-falldetection.src
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+
+python server.py --model best_falling.pt --port 8000
+```
+
+You should see:
+
+```text
+Loading best_falling.pt...
+Model loaded. Classes: {0: 'fall', 1: 'no_fall'}
+Listening on http://0.0.0.0:8000
+```
+
+Find your laptop's IP. macOS:
+
+```bash
+ipconfig getifaddr en0
+```
+
+Linux:
+
+```bash
+hostname -I
+```
+
+Confirm the server is reachable from another machine on the same network:
+
+```bash
+curl http://<laptop-ip>:8000/health
+```
+
+Expected: `{"status":"ok","model":"best_falling.pt"}`.
+
+## B. Tell the car where the server lives
+
+On the Pi, edit `raspbot/config.py`:
+
+```python
+FALL_SERVER_URL = "http://192.168.1.55:8000"   # <-- your laptop's IP
+```
+
+(Or pass `--fall-server http://...` on the command line every time.)
+
+## C. Plug the USB camera into the Pi
+
+Find which video device it is:
+
+```bash
+ls /dev/video*
+```
+
+Usually `/dev/video0` (index `0`). If you also have the Pi CSI camera attached,
+the USB camera may show up at a higher index — set it via `FALL_USB_CAMERA_INDEX`
+in `config.py` or pass `--fall-camera-index 2`.
+
+## D. Run the car with fall detection + stream
+
+```bash
+source .venv/bin/activate
+python -m raspbot.apps.line_follow \
+    --camera picamera2 \
+    --stream \
+    --fall-detection \
+    --debug
+```
+
+Expected log lines:
+
+```text
+[app] MJPEG stream live: open http://<pi-ip>:8080/ in a browser on your laptop.
+[app] Obstacle avoidance enabled.
+[app] Fall detection ON. Server: http://192.168.1.55:8000
+[app] White-line follower started.
+```
+
+## E. Open the dashboard
+
+In your laptop browser:
+
+```text
+http://<pi-ip>:8080/
+```
+
+You'll see **three** live feeds:
+
+```text
+┌──────────────────┬──────────────────┬──────────────────┐
+│ Annotated        │ White-line mask  │ Fall detection   │
+│ (Pi camera)      │                  │ (USB camera)     │
+└──────────────────┴──────────────────┴──────────────────┘
+```
+
+When a fall is detected, the third panel gets a red banner reading **FALL
+DETECTED**, and the car stops. As soon as the person stands up (or the state
+goes stale after `FALL_STALE_AFTER_SEC` seconds), the car resumes.
+
+## F. Behavior priority on the car
+
+Higher = wins:
+
+```text
+1. Fall detection            → STOP (until cleared)
+2. Front ultrasonic < AVOID_DISTANCE_CM → stop + backup + spin
+3. Line found                → PID differential drive
+4. Line lost + IR triggered  → turn away from blocked side
+5. Line lost + no IR signal  → sweep search
+```
+
+## G. Troubleshooting
+
+| Symptom | Fix |
+|---|---|
+| `WARNING: fall detection disabled (USB camera index 0 did not open)` | Plug in the USB camera; check `ls /dev/video*`; pass `--fall-camera-index N` |
+| `[fall] server error: ConnectionError` overlay | Server not running, wrong IP, or different network |
+| `[fall] server error: ReadTimeout` | Inference too slow → lower `FALL_TARGET_FPS` to 2, or switch to `yolov8n.pt` on the server |
+| Car never stops when faking a fall | Lower `--conf` on the server (try `--conf 0.20`) |
+| Fall panel always blank | Make sure you passed `--fall-detection` AND `--stream` |
+| Both cameras conflict | The USB cam and CSI cam are independent; confirm with `vcgencmd get_camera` for CSI and `ls /dev/video*` for USB |
+
+## H. Run without the car (server-only smoke test)
+
+To test the server alone with the laptop's own webcam:
+
+```bash
+# On the laptop
+cd capstone-falldetection.src
+source .venv/bin/activate
+python app.py    # original standalone demo, uses laptop webcam
+```
+
+---
+
 ---
 
 # Option B — Alternative: clone official Yahboom repo
@@ -660,6 +819,7 @@ python -m scripts.motor_test
 python -m raspbot.apps.line_follow --camera picamera2 --dry-run --debug
 python -m raspbot.apps.line_follow --camera picamera2
 python -m raspbot.apps.line_follow --camera picamera2 --stream   # view from laptop
+python -m raspbot.apps.line_follow --camera picamera2 --stream --fall-detection
 ```
 
 Do not run the real car before camera, vision, sensor, and motor tests pass.

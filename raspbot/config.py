@@ -161,3 +161,32 @@ AVOID_BACKUP_SPEED = 30
 # Spin duration and speed when avoiding.
 AVOID_SPIN_SEC = 0.45
 AVOID_SPIN_SPEED = 35
+
+
+# -----------------------------
+# Fall detection (remote inference)
+# A USB camera on the car is read in a background thread and frames are POSTed
+# to the FastAPI server in capstone-falldetection.src (running on your laptop).
+# When `falling` is True, the car stops until the fall clears.
+# -----------------------------
+
+# Replace with your laptop's IP — the one that runs server.py.
+FALL_SERVER_URL = "http://172.20.10.2:8000"
+
+# Which USB camera (cv2.VideoCapture index) to read from.
+FALL_USB_CAMERA_INDEX = 0
+FALL_CAMERA_WIDTH = 320
+FALL_CAMERA_HEIGHT = 240
+
+# Frames per second sent to the server (don't need 30 — fall events are slow).
+FALL_TARGET_FPS = 5
+
+# JPEG quality of uploaded frames. 70 is a good size/quality balance.
+FALL_JPEG_QUALITY = 70
+
+# Per-request timeout (sec). Increase if your laptop is slow or wifi flaky.
+FALL_TIMEOUT_SEC = 2.0
+
+# If the server stops responding for this many seconds, the cached "falling"
+# state is forced back to False so the car doesn't sit forever.
+FALL_STALE_AFTER_SEC = 3.0

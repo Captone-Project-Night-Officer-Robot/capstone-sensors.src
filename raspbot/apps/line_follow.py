@@ -31,6 +31,7 @@ from raspbot.hardware.ir_sensors import IRReading
 from raspbot.hardware.motor import MotorController
 from raspbot.hardware.pid import PIDController
 from raspbot.vision.camera import create_camera
+from raspbot.vision.fall_detector import FallDetectorClient
 from raspbot.vision.mjpeg_server import MJPEGServer
 from raspbot.vision.white_line_detector import WhiteLineDetector, draw_debug
 
@@ -165,6 +166,15 @@ def main() -> None:
     )
     parser.add_argument("--stream-port", type=int, default=8080)
     parser.add_argument("--stream-fps", type=int, default=15)
+    parser.add_argument(
+        "--fall-detection",
+        action="store_true",
+        help="Enable remote YOLO fall detection via the inference server.",
+    )
+    parser.add_argument("--fall-server", default=cfg.FALL_SERVER_URL)
+    parser.add_argument(
+        "--fall-camera-index", type=int, default=cfg.FALL_USB_CAMERA_INDEX
+    )
     args = parser.parse_args()
 
     camera = create_camera(
@@ -201,6 +211,25 @@ def main() -> None:
             "in a browser on your laptop."
         )
 
+    fall_client: FallDetectorClient | None = None
+    if args.fall_detection:
+        try:
+            fall_client = FallDetectorClient(
+                server_url=args.fall_server,
+                camera_index=args.fall_camera_index,
+                camera_width=cfg.FALL_CAMERA_WIDTH,
+                camera_height=cfg.FALL_CAMERA_HEIGHT,
+                target_fps=cfg.FALL_TARGET_FPS,
+                jpeg_quality=cfg.FALL_JPEG_QUALITY,
+                timeout_sec=cfg.FALL_TIMEOUT_SEC,
+                stale_after_sec=cfg.FALL_STALE_AFTER_SEC,
+            )
+            fall_client.start()
+            print(f"[app] Fall detection ON. Server: {args.fall_server}")
+        except Exception as exc:
+            print(f"[app] WARNING: fall detection disabled ({exc})")
+            fall_client = None
+
     print("[app] White-line follower started.")
     print("[app] Stop with Ctrl+C.")
 
@@ -219,6 +248,25 @@ def main() -> None:
     try:
         while True:
             frame = camera.read()
+
+            # Highest-priority override: stop the car while a human appears
+            # to be falling/fallen. Still push the USB-camera stream so the
+            # operator can see what the server is seeing.
+            if fall_client is not None:
+                fall_state = fall_client.state()
+                if stream_server is not None and fall_state.annotated_frame is not None:
+                    stream_server.push("fall", fall_state.annotated_frame)
+                if fall_state.falling:
+                    if args.debug and frame_idx % 15 == 0:
+                        print(
+                            f"[fall] STOPPED falling=True "
+                            f"infer={fall_state.infer_ms:.0f}ms "
+                            f"people={len(fall_state.people)}"
+                        )
+                    motor.stop()
+                    frame_idx += 1
+                    time.sleep(cfg.CONTROL_DELAY_SEC)
+                    continue
 
             if avoider is not None:
                 decision = avoider.evaluate()
@@ -282,6 +330,8 @@ def main() -> None:
     except KeyboardInterrupt:
         print("\n[app] Ctrl+C received. Stopping.")
     finally:
+        if fall_client is not None:
+            fall_client.stop()
         if stream_server is not None:
             stream_server.stop()
         if avoider is not None:

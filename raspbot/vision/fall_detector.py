@@ -1,0 +1,199 @@
+"""
+Client for the remote fall-detection server.
+
+Reads a USB camera in a background thread, POSTs each frame as JPEG to the
+inference server, and exposes the latest result through thread-safe accessors.
+
+Failure modes are handled gracefully:
+  - Server unreachable → state stays last-known, error is recorded.
+  - No update for STALE_AFTER_SEC seconds → falling is forced to False.
+  - USB camera missing → start() raises, caller can disable the feature.
+"""
+
+from __future__ import annotations
+
+import threading
+import time
+from dataclasses import dataclass, field
+from typing import Any
+
+import cv2
+import numpy as np
+import requests
+
+
+@dataclass
+class FallState:
+    falling: bool = False
+    people: list[dict[str, Any]] = field(default_factory=list)
+    infer_ms: float = 0.0
+    last_update: float = 0.0
+    last_error: str = ""
+    annotated_frame: np.ndarray | None = None
+
+
+class FallDetectorClient:
+    def __init__(
+        self,
+        server_url: str,
+        camera_index: int = 0,
+        camera_width: int = 320,
+        camera_height: int = 240,
+        target_fps: float = 5.0,
+        jpeg_quality: int = 70,
+        timeout_sec: float = 2.0,
+        stale_after_sec: float = 3.0,
+    ) -> None:
+        self.server_url = server_url.rstrip("/")
+        self.camera_index = camera_index
+        self.camera_width = camera_width
+        self.camera_height = camera_height
+        self.target_fps = max(0.1, target_fps)
+        self.jpeg_quality = jpeg_quality
+        self.timeout_sec = timeout_sec
+        self.stale_after_sec = stale_after_sec
+
+        self._state = FallState()
+        self._lock = threading.Lock()
+        self._stop_event = threading.Event()
+        self._thread: threading.Thread | None = None
+        self._cap: cv2.VideoCapture | None = None
+        self._session = requests.Session()
+
+    def start(self) -> None:
+        if self._thread is not None:
+            return
+
+        self._cap = cv2.VideoCapture(self.camera_index)
+        if not self._cap.isOpened():
+            self._cap = None
+            raise RuntimeError(
+                f"USB camera index {self.camera_index} did not open. "
+                "Check `ls /dev/video*` and the --fall-camera-index flag."
+            )
+        self._cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.camera_width)
+        self._cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.camera_height)
+
+        self._stop_event.clear()
+        self._thread = threading.Thread(target=self._run, daemon=True)
+        self._thread.start()
+
+    def stop(self) -> None:
+        self._stop_event.set()
+        if self._thread is not None:
+            self._thread.join(timeout=2.0)
+            self._thread = None
+        if self._cap is not None:
+            self._cap.release()
+            self._cap = None
+
+    def state(self) -> FallState:
+        with self._lock:
+            s = self._state
+            if s.last_update == 0.0:
+                return s
+            if time.time() - s.last_update > self.stale_after_sec:
+                return FallState(
+                    falling=False,
+                    people=[],
+                    infer_ms=s.infer_ms,
+                    last_update=s.last_update,
+                    last_error="stale",
+                    annotated_frame=s.annotated_frame,
+                )
+            return s
+
+    def is_falling(self) -> bool:
+        return self.state().falling
+
+    def _run(self) -> None:
+        interval = 1.0 / self.target_fps
+
+        while not self._stop_event.is_set():
+            t_loop = time.time()
+
+            try:
+                assert self._cap is not None
+                ok, frame = self._cap.read()
+                if not ok or frame is None:
+                    time.sleep(0.1)
+                    continue
+
+                result = self._send(frame)
+                annotated = self._annotate(frame, result)
+
+                with self._lock:
+                    self._state = FallState(
+                        falling=bool(result.get("falling", False)),
+                        people=result.get("people", []),
+                        infer_ms=float(result.get("infer_ms", 0.0)),
+                        last_update=time.time(),
+                        last_error="",
+                        annotated_frame=annotated,
+                    )
+            except Exception as exc:
+                with self._lock:
+                    self._state.last_error = str(exc)
+                    # Keep showing the raw frame so the operator still sees the
+                    # USB camera even when the server is unreachable.
+                    if self._cap is not None:
+                        ok, frame = self._cap.read()
+                        if ok and frame is not None:
+                            self._state.annotated_frame = self._annotate_error(
+                                frame, exc
+                            )
+
+            elapsed = time.time() - t_loop
+            self._stop_event.wait(max(0.0, interval - elapsed))
+
+    def _send(self, frame: np.ndarray) -> dict[str, Any]:
+        ok, buf = cv2.imencode(
+            ".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, self.jpeg_quality]
+        )
+        if not ok:
+            raise RuntimeError("JPEG encode failed")
+
+        files = {"image": ("frame.jpg", buf.tobytes(), "image/jpeg")}
+        resp = self._session.post(
+            f"{self.server_url}/detect", files=files, timeout=self.timeout_sec
+        )
+        resp.raise_for_status()
+        return resp.json()
+
+    def _annotate(self, frame: np.ndarray, result: dict) -> np.ndarray:
+        out = frame.copy()
+        for p in result.get("people", []):
+            x1, y1, x2, y2 = p["bbox"]
+            falling = bool(p.get("is_falling"))
+            color = (0, 0, 255) if falling else (0, 255, 0)
+            cv2.rectangle(out, (x1, y1), (x2, y2), color, 2)
+            label = f"{p.get('class','?')} {int(p.get('confidence',0) * 100)}%"
+            cv2.putText(
+                out, label, (x1, max(20, y1 - 5)),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2,
+            )
+
+        if result.get("falling"):
+            cv2.rectangle(out, (0, 0), (out.shape[1], 36), (0, 0, 255), -1)
+            cv2.putText(
+                out, "FALL DETECTED", (10, 26),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2,
+            )
+
+        infer_ms = float(result.get("infer_ms", 0.0))
+        cv2.putText(
+            out, f"infer {infer_ms:.0f}ms",
+            (10, out.shape[0] - 10),
+            cv2.FONT_HERSHEY_SIMPLEX, 0.4, (200, 200, 200), 1,
+        )
+        return out
+
+    def _annotate_error(self, frame: np.ndarray, exc: Exception) -> np.ndarray:
+        out = frame.copy()
+        cv2.rectangle(out, (0, 0), (out.shape[1], 30), (0, 100, 200), -1)
+        msg = f"server error: {type(exc).__name__}"
+        cv2.putText(
+            out, msg[:48], (10, 22),
+            cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1,
+        )
+        return out
