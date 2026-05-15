@@ -216,3 +216,10 @@ APPROACH_SPEED = 25                # forward speed while approaching
 APPROACH_STOP_DISTANCE_CM = 10.0   # halt once obstacle is closer than this
 APPROACH_STEERING_GAIN = 0.15      # px-offset -> wheel-speed reduction
 APPROACH_MAX_REDUCTION = 20        # cap on the differential correction
+
+# -- Respectful distance for non-falling (standing) people --
+# When the USB camera sees a person but they are NOT falling, and the front
+# ultrasonic reports they are closer than this, the car stops and waits.
+# Resumes line-follow when the person steps away or leaves the camera frame.
+# Set to 0 to disable. Must be larger than APPROACH_STOP_DISTANCE_CM.
+PERSON_KEEP_DISTANCE_CM = 30.0

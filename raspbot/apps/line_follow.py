@@ -331,6 +331,27 @@ def main() -> None:
                     time.sleep(cfg.CONTROL_DELAY_SEC)
                     continue
 
+                # A standing (non-falling) person is in the camera frame:
+                # keep a respectful safe distance. Triggers only when the
+                # ultrasonic also reports them being close ahead.
+                if (
+                    fall_state.people
+                    and avoider is not None
+                    and cfg.PERSON_KEEP_DISTANCE_CM > 0
+                ):
+                    person_dist = avoider.ultrasonic.latest_cm()
+                    if person_dist <= cfg.PERSON_KEEP_DISTANCE_CM:
+                        motor.stop()
+                        if args.debug and frame_idx % 30 == 0:
+                            print(
+                                f"[person] STOP dist={person_dist:.1f}cm "
+                                f"people={len(fall_state.people)} "
+                                f"(keep ≥ {cfg.PERSON_KEEP_DISTANCE_CM:.0f}cm)"
+                            )
+                        frame_idx += 1
+                        time.sleep(cfg.CONTROL_DELAY_SEC)
+                        continue
+
             # Ultrasonic-driven spin/backup avoidance. Gated by config —
             # disabled by default so it does not fight the fall-approach
             # logic (both use the same ultrasonic threshold).
