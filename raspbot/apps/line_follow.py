@@ -269,6 +269,7 @@ def main() -> None:
             timeout_sec=cfg.VOICE_API_TIMEOUT_SEC,
             trigger_stop_seconds=cfg.VOICE_TRIGGER_STOP_SECONDS,
             end_after_no_fall_seconds=cfg.VOICE_END_AFTER_NO_FALL_SECONDS,
+            retry_cooldown_seconds=cfg.VOICE_RETRY_COOLDOWN_SEC,
         )
         print(f"[app] Voice agent ON. API: {args.voice_api}")
 

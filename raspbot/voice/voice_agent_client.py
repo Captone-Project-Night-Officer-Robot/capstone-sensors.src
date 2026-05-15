@@ -58,12 +58,14 @@ class VoiceAgentClient:
         timeout_sec: float = 5.0,
         trigger_stop_seconds: float = 1.0,
         end_after_no_fall_seconds: float = 3.0,
+        retry_cooldown_seconds: float = 5.0,
     ) -> None:
         self.api_url = api_url.rstrip("/")
         self.robot_id = robot_id
         self.timeout_sec = timeout_sec
         self.trigger_stop_seconds = trigger_stop_seconds
         self.end_after_no_fall_seconds = end_after_no_fall_seconds
+        self.retry_cooldown_seconds = retry_cooldown_seconds
 
         self._session: Optional[VoiceSession] = None
         self._lock = threading.Lock()
@@ -71,6 +73,7 @@ class VoiceAgentClient:
 
         self._first_arrived_at: Optional[float] = None
         self._last_fall_at: Optional[float] = None
+        self._last_failed_attempt_at: Optional[float] = None
 
         # LiveKit (only used if SDK installed)
         self._loop: Optional[asyncio.AbstractEventLoop] = None
@@ -126,6 +129,15 @@ class VoiceAgentClient:
     # ─── session start/stop ───────────────────────────────────────
 
     def _start_session(self) -> bool:
+        now = time.time()
+
+        # Respect retry cooldown after a previous failure.
+        if (
+            self._last_failed_attempt_at is not None
+            and now - self._last_failed_attempt_at < self.retry_cooldown_seconds
+        ):
+            return False
+
         try:
             resp = self._http.post(
                 f"{self.api_url}/api/v1/session/start",
@@ -142,6 +154,7 @@ class VoiceAgentClient:
             )
             with self._lock:
                 self._session = session
+            self._last_failed_attempt_at = None
 
             print(
                 f"[voice] session started  room={session.room_name}  "
@@ -160,9 +173,16 @@ class VoiceAgentClient:
                 )
             return True
         except Exception as exc:
-            print(f"[voice] session start FAILED: {exc}")
+            # Keep the message short; full repr was filling the log.
+            short = type(exc).__name__
+            print(
+                f"[voice] session start FAILED ({short}). "
+                f"Retrying in {self.retry_cooldown_seconds:.0f}s. "
+                f"Hint: is the voice API running at {self.api_url}?"
+            )
             with self._lock:
                 self._session = None
+            self._last_failed_attempt_at = now
             return False
 
     def _end_session(self) -> None:

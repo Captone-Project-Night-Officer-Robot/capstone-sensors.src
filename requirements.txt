@@ -1,4 +1,6 @@
-numpy
+# numpy 1.x: required by the system cv2 / picamera2 on the Pi. numpy 2.x
+# breaks the ABI for those wheels — keep this pin.
+numpy<2
 opencv-python
 requests
 

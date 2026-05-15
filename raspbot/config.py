@@ -248,3 +248,8 @@ VOICE_END_AFTER_NO_FALL_SECONDS = 3.0
 
 # HTTP timeout for the session-start call.
 VOICE_API_TIMEOUT_SEC = 5.0
+
+# After a failed session-start (server down, wrong URL, etc.) wait this long
+# before retrying. Prevents the log from filling up when the voice API isn't
+# running.
+VOICE_RETRY_COOLDOWN_SEC = 5.0
