@@ -353,6 +353,30 @@ def main() -> None:
 
             action = decide_action(detection.found, detection.offset_x)
 
+            # Line-found-but-obstacle-ahead safety. Independent of the
+            # fall-approach path (which only fires when falling=True).
+            if (
+                action != "lost"
+                and avoider is not None
+                and cfg.LINE_OBSTACLE_STOP_CM > 0
+            ):
+                line_dist = avoider.ultrasonic.latest_cm()
+                if line_dist <= cfg.LINE_OBSTACLE_STOP_CM:
+                    motor.stop()
+                    if args.debug and frame_idx % 30 == 0:
+                        print(
+                            f"[line] obstacle dist={line_dist:.1f}cm "
+                            f"<= {cfg.LINE_OBSTACLE_STOP_CM}cm  -> STOP (waiting)"
+                        )
+                    if render_debug:
+                        debug = draw_debug(frame, detection)
+                        if stream_server is not None:
+                            stream_server.push("main", debug)
+                            stream_server.push("mask", detection.mask)
+                    frame_idx += 1
+                    time.sleep(cfg.CONTROL_DELAY_SEC)
+                    continue
+
             lost_info = ""
             if action == "lost":
                 # Reset PID so stale state doesn't cause a jerk on reacquire.

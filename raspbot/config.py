@@ -163,6 +163,12 @@ AVOIDANCE_ENABLED = True
 # 10 cm — otherwise the two systems fight each other.
 ULTRASONIC_AVOIDANCE_ENABLED = False
 
+# Line-follow safety: when the line is detected AND something is closer than
+# this many cm, the car halts and waits for the obstacle to clear instead of
+# driving into it. Set to 0 to disable. Should be > APPROACH_STOP_DISTANCE_CM
+# so fall-approach can still close the last few cm.
+LINE_OBSTACLE_STOP_CM = 15.0
+
 # Short reverse before spin — helps unstick from a wall.
 AVOID_BACKUP_SEC = 0.15
 AVOID_BACKUP_SPEED = 30
@@ -180,7 +186,7 @@ AVOID_SPIN_SPEED = 35
 # -----------------------------
 
 # Replace with your laptop's IP — the one that runs server.py.
-FALL_SERVER_URL = "http://172.20.10.2:8000"
+FALL_SERVER_URL = "http://172.20.10.12:8000"
 
 # Which USB camera (cv2.VideoCapture index) to read from.
 # Note: the original app.py upscales to 980x740 before YOLO — at 320x240 the
