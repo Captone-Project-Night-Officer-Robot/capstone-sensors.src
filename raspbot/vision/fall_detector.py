@@ -22,6 +22,52 @@ import numpy as np
 import requests
 
 
+def _corner_rect(
+    img: np.ndarray,
+    x1: int, y1: int, x2: int, y2: int,
+    color: tuple[int, int, int],
+    thick: int = 2,
+    corner_len: int = 18,
+) -> None:
+    """cvzone.cornerRect-style box: a faint outline + bright corner ticks."""
+    cv2.rectangle(img, (x1, y1), (x2, y2), color, 1)
+
+    # top-left
+    cv2.line(img, (x1, y1), (x1 + corner_len, y1), color, thick)
+    cv2.line(img, (x1, y1), (x1, y1 + corner_len), color, thick)
+    # top-right
+    cv2.line(img, (x2, y1), (x2 - corner_len, y1), color, thick)
+    cv2.line(img, (x2, y1), (x2, y1 + corner_len), color, thick)
+    # bottom-left
+    cv2.line(img, (x1, y2), (x1 + corner_len, y2), color, thick)
+    cv2.line(img, (x1, y2), (x1, y2 - corner_len), color, thick)
+    # bottom-right
+    cv2.line(img, (x2, y2), (x2 - corner_len, y2), color, thick)
+    cv2.line(img, (x2, y2), (x2, y2 - corner_len), color, thick)
+
+
+def _filled_label(
+    img: np.ndarray,
+    text: str,
+    x: int, y: int,
+    color: tuple[int, int, int],
+    font_scale: float = 0.45,
+) -> None:
+    """Solid-color background behind text for readability against any frame."""
+    (tw, th), baseline = cv2.getTextSize(
+        text, cv2.FONT_HERSHEY_SIMPLEX, font_scale, 1
+    )
+    pad = 4
+    top = max(0, y - th - 2 * pad)
+    cv2.rectangle(
+        img, (x, top), (x + tw + 2 * pad, y), color, -1
+    )
+    cv2.putText(
+        img, text, (x + pad, y - pad),
+        cv2.FONT_HERSHEY_SIMPLEX, font_scale, (0, 0, 0), 1, cv2.LINE_AA,
+    )
+
+
 @dataclass
 class FallState:
     falling: bool = False
@@ -162,16 +208,18 @@ class FallDetectorClient:
 
     def _annotate(self, frame: np.ndarray, result: dict) -> np.ndarray:
         out = frame.copy()
+
         for p in result.get("people", []):
             x1, y1, x2, y2 = p["bbox"]
             falling = bool(p.get("is_falling"))
             color = (0, 0, 255) if falling else (0, 255, 0)
-            cv2.rectangle(out, (x1, y1), (x2, y2), color, 2)
-            label = f"{p.get('class','?')} {int(p.get('confidence',0) * 100)}%"
-            cv2.putText(
-                out, label, (x1, max(20, y1 - 5)),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2,
+            label = (
+                f"{p.get('class','?').upper()}  "
+                f"{int(p.get('confidence', 0) * 100)}%"
+                + ("  FALL" if falling else "")
             )
+            _corner_rect(out, x1, y1, x2, y2, color, thick=2, corner_len=18)
+            _filled_label(out, label, x1, y1, color)
 
         if result.get("falling"):
             cv2.rectangle(out, (0, 0), (out.shape[1], 36), (0, 0, 255), -1)
@@ -181,8 +229,9 @@ class FallDetectorClient:
             )
 
         infer_ms = float(result.get("infer_ms", 0.0))
+        n_people = len(result.get("people", []))
         cv2.putText(
-            out, f"infer {infer_ms:.0f}ms",
+            out, f"infer {infer_ms:.0f}ms  people={n_people}",
             (10, out.shape[0] - 10),
             cv2.FONT_HERSHEY_SIMPLEX, 0.4, (200, 200, 200), 1,
         )
