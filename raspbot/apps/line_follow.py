@@ -256,13 +256,18 @@ def main() -> None:
                 fall_state = fall_client.state()
                 if stream_server is not None and fall_state.annotated_frame is not None:
                     stream_server.push("fall", fall_state.annotated_frame)
+
+                if args.debug and frame_idx % 30 == 0:
+                    err = f"  err={fall_state.last_error}" if fall_state.last_error else ""
+                    age = time.time() - fall_state.last_update if fall_state.last_update else -1
+                    print(
+                        f"[fall] falling={fall_state.falling} "
+                        f"people={len(fall_state.people)} "
+                        f"infer={fall_state.infer_ms:.0f}ms "
+                        f"age={age:.1f}s{err}"
+                    )
+
                 if fall_state.falling:
-                    if args.debug and frame_idx % 15 == 0:
-                        print(
-                            f"[fall] STOPPED falling=True "
-                            f"infer={fall_state.infer_ms:.0f}ms "
-                            f"people={len(fall_state.people)}"
-                        )
                     motor.stop()
                     frame_idx += 1
                     time.sleep(cfg.CONTROL_DELAY_SEC)

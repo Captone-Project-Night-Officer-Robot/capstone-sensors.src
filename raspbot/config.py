@@ -174,9 +174,12 @@ AVOID_SPIN_SPEED = 35
 FALL_SERVER_URL = "http://172.20.10.2:8000"
 
 # Which USB camera (cv2.VideoCapture index) to read from.
+# Note: the original app.py upscales to 980x740 before YOLO — at 320x240 the
+# model often misses people. 640x480 is a good balance for bandwidth vs.
+# detection quality.
 FALL_USB_CAMERA_INDEX = 0
-FALL_CAMERA_WIDTH = 320
-FALL_CAMERA_HEIGHT = 240
+FALL_CAMERA_WIDTH = 640
+FALL_CAMERA_HEIGHT = 480
 
 # Frames per second sent to the server (don't need 30 — fall events are slow).
 FALL_TARGET_FPS = 5
