@@ -98,6 +98,48 @@ class LostLineSearcher:
         return self._direction
 
 
+def approach_fallen(
+    motor: MotorController,
+    target: dict | None,
+    distance_cm: float,
+    frame_width: int,
+) -> str:
+    """Drive slowly toward the fallen person, halt at APPROACH_STOP_DISTANCE_CM.
+
+    Steering is proportional to the bbox center's horizontal offset from the
+    USB-camera frame center.
+    """
+    if distance_cm <= cfg.APPROACH_STOP_DISTANCE_CM:
+        motor.stop()
+        return f"arrived dist={distance_cm:.1f}cm"
+
+    if target is None:
+        motor.stop()
+        return "no-target"
+
+    x1, y1, x2, y2 = target["bbox"]
+    bbox_cx = (x1 + x2) / 2.0
+    offset = bbox_cx - (frame_width / 2.0)
+
+    base = cfg.APPROACH_SPEED
+    correction = int(offset * cfg.APPROACH_STEERING_GAIN)
+    max_corr = cfg.APPROACH_MAX_REDUCTION
+    if correction > max_corr:
+        correction = max_corr
+    elif correction < -max_corr:
+        correction = -max_corr
+
+    if correction > 0:
+        # Target is right of center → slow right wheel.
+        motor.differential(base, max(0, base - correction))
+    elif correction < 0:
+        motor.differential(max(0, base + correction), base)
+    else:
+        motor.differential(base, base)
+
+    return f"approach dist={distance_cm:.1f}cm offset={offset:+.0f}"
+
+
 def handle_lost_line(
     motor: MotorController,
     searcher: LostLineSearcher,
@@ -249,9 +291,9 @@ def main() -> None:
         while True:
             frame = camera.read()
 
-            # Highest-priority override: stop the car while a human appears
-            # to be falling/fallen. Still push the USB-camera stream so the
-            # operator can see what the server is seeing.
+            # Highest-priority override: when a fall is detected, drive toward
+            # the fallen person and halt at APPROACH_STOP_DISTANCE_CM. The
+            # USB-camera stream keeps updating so the operator can see why.
             if fall_client is not None:
                 fall_state = fall_client.state()
                 if stream_server is not None and fall_state.annotated_frame is not None:
@@ -268,7 +310,23 @@ def main() -> None:
                     )
 
                 if fall_state.falling:
-                    motor.stop()
+                    target = next(
+                        (p for p in fall_state.people if p.get("is_falling")),
+                        None,
+                    )
+                    distance_cm = (
+                        avoider.ultrasonic.latest_cm()
+                        if avoider is not None
+                        else float("inf")
+                    )
+                    frame_w = (
+                        fall_state.annotated_frame.shape[1]
+                        if fall_state.annotated_frame is not None
+                        else cfg.FALL_CAMERA_WIDTH
+                    )
+                    info = approach_fallen(motor, target, distance_cm, frame_w)
+                    if args.debug and frame_idx % 15 == 0:
+                        print(f"[fall→{info}]")
                     frame_idx += 1
                     time.sleep(cfg.CONTROL_DELAY_SEC)
                     continue

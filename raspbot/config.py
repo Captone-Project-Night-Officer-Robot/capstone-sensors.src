@@ -193,3 +193,11 @@ FALL_TIMEOUT_SEC = 2.0
 # If the server stops responding for this many seconds, the cached "falling"
 # state is forced back to False so the car doesn't sit forever.
 FALL_STALE_AFTER_SEC = 3.0
+
+# -- Approach-mode behavior when a fall is detected --
+# Instead of just stopping, the car drives slowly toward the fallen person
+# and halts when the ultrasonic reports the configured distance.
+APPROACH_SPEED = 25                # forward speed while approaching
+APPROACH_STOP_DISTANCE_CM = 10.0   # halt once obstacle is closer than this
+APPROACH_STEERING_GAIN = 0.15      # px-offset -> wheel-speed reduction
+APPROACH_MAX_REDUCTION = 20        # cap on the differential correction
