@@ -331,7 +331,10 @@ def main() -> None:
                     time.sleep(cfg.CONTROL_DELAY_SEC)
                     continue
 
-            if avoider is not None:
+            # Ultrasonic-driven spin/backup avoidance. Gated by config —
+            # disabled by default so it does not fight the fall-approach
+            # logic (both use the same ultrasonic threshold).
+            if avoider is not None and cfg.ULTRASONIC_AVOIDANCE_ENABLED:
                 decision = avoider.evaluate()
 
                 if decision.blocked:

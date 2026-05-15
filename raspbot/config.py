@@ -151,8 +151,17 @@ IR_ACTIVE_LOW = True
 # Avoidance behavior
 # -----------------------------
 
-# Master switch — set False to skip sensor init / avoidance entirely.
+# Master switch — set False to skip sensor init entirely.
+# When True, the ultrasonic + IR sensors are read every loop and their data is
+# made available to the fall-approach logic and the line-lost IR navigation,
+# REGARDLESS of ULTRASONIC_AVOIDANCE_ENABLED below.
 AVOIDANCE_ENABLED = True
+
+# Separate switch for the *behavior*. When True, the front ultrasonic
+# automatically triggers a stop+backup+spin maneuver at AVOID_DISTANCE_CM.
+# Set False to let fall detection be the ONLY thing that stops the car at
+# 10 cm — otherwise the two systems fight each other.
+ULTRASONIC_AVOIDANCE_ENABLED = False
 
 # Short reverse before spin — helps unstick from a wall.
 AVOID_BACKUP_SEC = 0.15
