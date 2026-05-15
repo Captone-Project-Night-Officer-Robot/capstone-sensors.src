@@ -34,6 +34,7 @@ from raspbot.vision.camera import create_camera
 from raspbot.vision.fall_detector import FallDetectorClient
 from raspbot.vision.mjpeg_server import MJPEGServer
 from raspbot.vision.white_line_detector import WhiteLineDetector, draw_debug
+from raspbot.voice.voice_agent_client import VoiceAgentClient
 
 
 steering_pid = PIDController(
@@ -217,6 +218,13 @@ def main() -> None:
     parser.add_argument(
         "--fall-camera-index", type=int, default=cfg.FALL_USB_CAMERA_INDEX
     )
+    parser.add_argument(
+        "--voice",
+        action="store_true",
+        help="Trigger Night Officer voice agent when stopped at a fallen person.",
+    )
+    parser.add_argument("--voice-api", default=cfg.VOICE_API_URL)
+    parser.add_argument("--voice-robot-id", default=cfg.VOICE_ROBOT_ID)
     args = parser.parse_args()
 
     camera = create_camera(
@@ -252,6 +260,17 @@ def main() -> None:
             f"[app] MJPEG stream live: open http://<pi-ip>:{args.stream_port}/ "
             "in a browser on your laptop."
         )
+
+    voice: VoiceAgentClient | None = None
+    if args.voice:
+        voice = VoiceAgentClient(
+            api_url=args.voice_api,
+            robot_id=args.voice_robot_id,
+            timeout_sec=cfg.VOICE_API_TIMEOUT_SEC,
+            trigger_stop_seconds=cfg.VOICE_TRIGGER_STOP_SECONDS,
+            end_after_no_fall_seconds=cfg.VOICE_END_AFTER_NO_FALL_SECONDS,
+        )
+        print(f"[app] Voice agent ON. API: {args.voice_api}")
 
     fall_client: FallDetectorClient | None = None
     if args.fall_detection:
@@ -325,8 +344,12 @@ def main() -> None:
                         else cfg.FALL_CAMERA_WIDTH
                     )
                     info = approach_fallen(motor, target, distance_cm, frame_w)
+                    arrived = info.startswith("arrived")
+                    if voice is not None:
+                        voice.tick(falling=True, arrived=arrived)
                     if args.debug and frame_idx % 15 == 0:
-                        print(f"[fall→{info}]")
+                        voice_tag = "  voice=ON" if voice and voice.is_active() else ""
+                        print(f"[fall→{info}]{voice_tag}")
                     frame_idx += 1
                     time.sleep(cfg.CONTROL_DELAY_SEC)
                     continue
@@ -351,6 +374,20 @@ def main() -> None:
                         frame_idx += 1
                         time.sleep(cfg.CONTROL_DELAY_SEC)
                         continue
+
+            # Keep the car parked while a voice session is still active even
+            # if YOLO no longer flags a fall — we don't want to drive off
+            # mid-conversation. The voice client's end-debounce decides when
+            # to actually disconnect.
+            if voice is not None:
+                voice.tick(falling=False, arrived=False)
+                if voice.is_active():
+                    motor.stop()
+                    if args.debug and frame_idx % 30 == 0:
+                        print(f"[voice] holding (room={voice.current_room()})")
+                    frame_idx += 1
+                    time.sleep(cfg.CONTROL_DELAY_SEC)
+                    continue
 
             # Ultrasonic-driven spin/backup avoidance. Gated by config —
             # disabled by default so it does not fight the fall-approach
@@ -441,6 +478,8 @@ def main() -> None:
     except KeyboardInterrupt:
         print("\n[app] Ctrl+C received. Stopping.")
     finally:
+        if voice is not None:
+            voice.shutdown()
         if fall_client is not None:
             fall_client.stop()
         if stream_server is not None:

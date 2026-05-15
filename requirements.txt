@@ -1,3 +1,8 @@
 numpy
 opencv-python
 requests
+
+# Optional — only needed if you run with --voice (Pi joins LiveKit room).
+# Heavy install (~30 MB + deps). Install separately:
+#   pip install livekit
+# livekit

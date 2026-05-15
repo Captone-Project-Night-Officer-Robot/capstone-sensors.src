@@ -223,3 +223,28 @@ APPROACH_MAX_REDUCTION = 20        # cap on the differential correction
 # Resumes line-follow when the person steps away or leaves the camera frame.
 # Set to 0 to disable. Must be larger than APPROACH_STOP_DISTANCE_CM.
 PERSON_KEEP_DISTANCE_CM = 30.0
+
+
+# -----------------------------
+# Voice-agent integration (capstone.voice-src)
+# When the car has stopped next to a fallen person, it triggers a LiveKit
+# voice session so the Night Officer agent can speak with them while help is
+# on the way.
+# -----------------------------
+
+# Base URL of the FastAPI voice server (capstone.voice-src/src/main.py).
+# Same machine as the fall-detection server in our setup, on its own port.
+VOICE_API_URL = "http://172.20.10.12:8001"
+
+# Identifier reported to the voice API as `robot_id`.
+VOICE_ROBOT_ID = "raspbot-01"
+
+# Debounce: only start a voice session after the car has been arrived-at-fall
+# (stopped at APPROACH_STOP_DISTANCE_CM) for this many seconds.
+VOICE_TRIGGER_STOP_SECONDS = 1.0
+
+# End the session when no fall has been detected for this long.
+VOICE_END_AFTER_NO_FALL_SECONDS = 3.0
+
+# HTTP timeout for the session-start call.
+VOICE_API_TIMEOUT_SEC = 5.0

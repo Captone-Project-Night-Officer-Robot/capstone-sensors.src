@@ -66,11 +66,13 @@ capstone-sensors.src/
 │   │   ├── ultrasonic.py        # HC-SR04, background-thread polling
 │   │   ├── ir_sensors.py        # dual IR (active-low)
 │   │   └── avoider.py           # fuses sensors + override layer
-│   └── vision/
-│       ├── camera.py
-│       ├── white_line_detector.py
-│       ├── mjpeg_server.py      # live debug view in a browser
-│       └── fall_detector.py     # USB camera -> remote YOLO server
+│   ├── vision/
+│   │   ├── camera.py
+│   │   ├── white_line_detector.py
+│   │   ├── mjpeg_server.py      # live debug view in a browser
+│   │   └── fall_detector.py     # USB camera -> remote YOLO server
+│   └── voice/
+│       └── voice_agent_client.py  # triggers LiveKit voice session
 └── scripts/
     ├── camera_test.py
     ├── clone_yahboom_repo.sh
@@ -524,6 +526,138 @@ To test the server alone with the laptop's own webcam:
 cd capstone-falldetection.src
 source .venv/bin/activate
 python app.py    # original standalone demo, uses laptop webcam
+```
+
+---
+
+# Step 10: Voice agent — talk to the fallen person
+
+When the car is stopped next to a fallen person, it triggers a LiveKit voice
+session via the Night Officer agent (`capstone.voice-src`). The agent greets
+calmly and stays in conversation until the person stands up.
+
+## How it works
+
+```text
+Pi (fall + arrived at 10 cm, held for 1 s)
+   │
+   ├─ POST /api/v1/session/start  →  laptop voice API on port 8001
+   │                                  returns { token, room_name, livekit_url }
+   ▼
+Pi joins LiveKit room (silent participant for now)
+   │
+   ▼
+Voice worker dispatches NightOfficerAgent into that room
+   │   Krisp BVC → Silero VAD → Eleven STT → Groq Llama → Eleven TTS
+   ▼
+TTS audio is published into the room (and will play through the Pi speaker
+once audio I/O is wired in Phase 2).
+
+When `falling=False` is observed for 3 s → Pi ends the session → resumes line.
+```
+
+## Phase 1 vs Phase 2
+
+| Phase | What works | What's needed |
+|---|---|---|
+| **Phase 1 (now)** | API trigger + LiveKit room connection + worker dispatch + agent enters room | `pip install livekit` on the Pi. Verifies whole pipeline; no audible audio yet. |
+| **Phase 2 (when mic + speaker are wired)** | Live two-way voice conversation | Add `sounddevice`, wire `AudioSource` (mic) and audio-frame routing (speaker). |
+
+## A. Run the voice server on your laptop
+
+In a third terminal on the laptop:
+
+```bash
+cd capstone.voice-src
+source .venv/bin/activate
+
+# FastAPI HTTP service (mints LiveKit tokens):
+uvicorn src.main:app --port 8001
+
+# In another laptop terminal — the agent worker:
+python -m src.worker dev    # or `console` for local mic test
+```
+
+Make sure `.env` in `capstone.voice-src` has valid keys:
+`LIVEKIT_URL`, `LIVEKIT_API_KEY`, `LIVEKIT_API_SECRET`, `GROQ_API_KEY`,
+`ELEVEN_API_KEY`, `ELEVEN_VOICE_ID`.
+
+## B. Tell the car where the voice API lives
+
+Edit `raspbot/config.py`:
+
+```python
+VOICE_API_URL = "http://192.168.1.55:8001"   # ← your laptop's IP, port 8001
+VOICE_ROBOT_ID = "raspbot-01"
+```
+
+## C. Install LiveKit on the Pi (one time)
+
+```bash
+source .venv/bin/activate
+pip install livekit
+```
+
+If you skip this step, the trigger still fires and logs the session, but the
+Pi never joins the room, so the agent isn't dispatched.
+
+## D. Run the car with everything on
+
+```bash
+source .venv/bin/activate
+python -m raspbot.apps.line_follow \
+    --camera picamera2 \
+    --stream \
+    --fall-detection \
+    --voice \
+    --debug
+```
+
+Expected log when a fall is detected and the car arrives:
+
+```text
+[fall→approach dist=42.3cm offset=-12]
+[fall→approach dist=18.1cm offset=+2]
+[fall→arrived dist=9.7cm]
+[fall→arrived dist=9.6cm]
+[voice] session started  room=raspbot-01-3f4a8b91  url=wss://...
+[voice] room CONNECTED (raspbot-01-3f4a8b91)
+[fall→arrived dist=9.6cm]  voice=ON
+[voice] holding (room=raspbot-01-3f4a8b91)
+[voice] holding (room=raspbot-01-3f4a8b91)
+...
+[voice] session ended  room=raspbot-01-3f4a8b91     ← person stood up for 3 s
+[app] frame=... action=forward                       ← resumes line-follow
+```
+
+## E. Tuning
+
+```python
+VOICE_TRIGGER_STOP_SECONDS     = 1.0   # how long to be stopped before talking
+VOICE_END_AFTER_NO_FALL_SECONDS = 3.0  # how long after fall clears to disconnect
+```
+
+## F. Troubleshooting
+
+| Symptom | Fix |
+|---|---|
+| `[voice] livekit SDK not installed` | `pip install livekit` on the Pi |
+| `[voice] session start FAILED: ConnectionError` | voice API not running, wrong port, or laptop on different network |
+| `[voice] join-room FAILED: ...` | check `LIVEKIT_URL` in `capstone.voice-src/.env` — must be reachable from the Pi |
+| Agent doesn't greet (worker logs show "no participants") | Pi joined but didn't publish — that's expected in Phase 1. The worker may still greet; you just won't hear it without a speaker. |
+| Voice keeps starting then stopping | Lower `VOICE_TRIGGER_STOP_SECONDS` or raise `VOICE_END_AFTER_NO_FALL_SECONDS` |
+
+## G. Behavior with all features on (final priority order)
+
+```text
+1. Voice session active            → STAY parked (don't drive away mid-conversation)
+2. Fall detected (USB cam + YOLO)
+     • dist  > 10 cm                → APPROACH (steer to bbox)
+     • dist ≤ 10 cm  + held 1 s     → STOP & trigger voice session
+3. Standing person + dist ≤ 30 cm   → STOP & wait
+4. Line found + obstacle ≤ 15 cm    → STOP & wait
+5. Line found + clear               → PID drive
+6. Line lost                        → IR-biased sweep
 ```
 
 ---
