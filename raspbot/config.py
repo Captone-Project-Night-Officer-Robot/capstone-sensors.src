@@ -4,7 +4,8 @@ Configuration for the Yahboom Pi4WD line-follower robot.
 Behavior priority (highest first):
   1. Voice session active        → STAY parked (don't drive mid-conversation)
   2. Fall detected               → STOP immediately, trigger voice session
-  3. Obstacle within OBSTACLE_DISTANCE_CM → STOP, then sweep to search the line
+  3. Obstacle within OBSTACLE_DISTANCE_CM → STOP, then turn right by
+     OBSTACLE_TURN_DEGREES to dodge around it (repeats while obstacle present)
   4. White line visible          → PID differential drive along the line
   5. White line lost             → sweep search (alternating left/right)
 """
@@ -39,11 +40,13 @@ CAMERA_ANALOGUE_GAIN = 1.0
 DEBUG_WINDOW_WIDTH = 800
 DEBUG_WINDOW_HEIGHT = 600
 
-# Use only the lower portion of the image. 0.65 = ignore top 65%, use
-# bottom 35%. Narrower ROI = less far-away ceiling lights / floor glare
+# Use only the lower portion of the image. 0.55 = ignore top 55%, use
+# bottom 45%. Narrower ROI = less far-away ceiling lights / floor glare
 # in view, more reliable line lock at the cost of shorter look-ahead.
-# Raise toward 0.75 if glare from far away keeps fooling the detector.
-ROI_TOP_RATIO = 0.65
+# Raise toward 0.75 if glare from far away keeps fooling the detector;
+# lower toward 0.5 if a close-up line registers as a fat blob rather
+# than a long strip and gets rejected by the aspect-ratio filter.
+ROI_TOP_RATIO = 0.55
 
 
 # -----------------------------
@@ -68,9 +71,10 @@ LINE_MAX_AREA_RATIO = 0.5
 # Require contours to be line-shaped: the rotated bounding rect's longer
 # side must be at least this many times the shorter side. A piece of
 # white tape viewed from above is typically 3-6×; glare blobs are < 2×.
-# Lower this if the robot loses the line on tight curves; raise it if
+# Lower this if the robot loses the line on tight curves or when the line
+# is close to the camera (it foreshortens to a fat blob); raise it if
 # round glare patches still pass through.
-LINE_ASPECT_RATIO_MIN = 2.5
+LINE_ASPECT_RATIO_MIN = 0
 
 # If the line center is within this many pixels of frame center, drive straight.
 CENTER_TOLERANCE_PX = 25
@@ -83,8 +87,13 @@ USE_MORPHOLOGY = True
 # Motor behavior
 # -----------------------------
 
-FORWARD_SPEED = 30
-TURN_SPEED = 45
+# NOTE: on a real floor with the chassis loaded, anything under ~45 tends
+# not to break static friction — the wheels spin freely when the car is
+# lifted but the car won't actually move forward on the ground.
+# FORWARD_SPEED must also be > STEERING_PID_OUTPUT_LIMIT, otherwise the
+# slow wheel during a steering correction gets commanded to 0 and stalls.
+FORWARD_SPEED = 35
+TURN_SPEED = 40
 SEARCH_TURN_SPEED = 22
 
 # PID gains for line steering. Converts pixel offset (line_x - frame_cx)
@@ -178,9 +187,28 @@ IR_ACTIVE_LOW = True
 SENSORS_ENABLED = True
 
 # When the front ultrasonic reports anything closer than this, the robot
-# STOPS and starts a sweep search for the white line (i.e. it tries to find
-# the line in a new heading that bypasses the obstacle).
+# STOPS and rotates right by OBSTACLE_TURN_DEGREES to dodge the obstacle.
+# If the obstacle is still in range after the turn, the maneuver repeats
+# (so two ticks = 120°, three = 180°, etc.) until the path is clear.
 OBSTACLE_DISTANCE_CM = 20.0
+
+# How far the robot rotates on each obstacle hit. 60° is the spec default.
+OBSTACLE_TURN_DEGREES = 60
+
+# Wheel speed used during the obstacle-dodge spin. Higher = quicker turn
+# but more wheel slip on slick floors. Independent of TURN_SPEED so it
+# can be tuned separately.
+OBSTACLE_TURN_SPEED = 40
+
+# Seconds the robot must spin in place at OBSTACLE_TURN_SPEED to rotate
+# 1 degree. Used to convert OBSTACLE_TURN_DEGREES into a turn duration —
+# the Yahboom car has no IMU/encoders so we time the spin.
+#
+# Calibrate empirically: run a one-shot 360° spin at OBSTACLE_TURN_SPEED
+# (e.g. scripts.motor_test), divide the elapsed seconds by 360.
+# Default 0.012 → a 60° turn lasts ~0.72 s, which is the right ballpark
+# on a fully-charged Raspbot at speed 40 on tile/laminate.
+OBSTACLE_TURN_SEC_PER_DEGREE = 0.012
 
 
 # -----------------------------

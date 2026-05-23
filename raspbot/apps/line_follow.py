@@ -4,9 +4,9 @@ Main app: white-line follower with fall detection + voice handoff.
 Behavior priority each frame (highest first):
     1. Voice session active        → STAY parked.
     2. Fall detected               → STOP immediately, trigger voice session.
-    3. Obstacle within OBSTACLE_DISTANCE_CM → STOP, then sweep to search the
-                                    white line (find a heading that bypasses
-                                    the obstacle).
+    3. Obstacle within OBSTACLE_DISTANCE_CM → STOP, then rotate right by
+                                    OBSTACLE_TURN_DEGREES (default 60°).
+                                    Repeats while the obstacle stays in range.
     4. White line visible          → PID differential drive.
     5. White line lost             → sweep search (alternating left/right).
 
@@ -75,11 +75,7 @@ def steering_speeds(offset_x: int) -> tuple[int, int]:
 # ─── line searcher ───────────────────────────────────────────────────────────
 
 class LineSearcher:
-    """Brief stop, then alternating left/right sweep until the line is found.
-
-    Used both when the line is lost and when an obstacle blocks the path —
-    the spec says "stop and search the white line" in both cases.
-    """
+    """Brief stop, then alternating left/right sweep until the line is found."""
 
     def __init__(self) -> None:
         self._direction = "right"
@@ -115,6 +111,55 @@ class LineSearcher:
             motor.spin_left(cfg.SEARCH_TURN_SPEED)
 
         return f"sweep-{self._direction}"
+
+
+# ─── obstacle avoider ────────────────────────────────────────────────────────
+
+class ObstacleAvoider:
+    """Brief stop, then a fixed right-turn of cfg.OBSTACLE_TURN_DEGREES.
+
+    The maneuver auto-resets when complete, so if the obstacle is still in
+    range on the next frame the bot does another OBSTACLE_TURN_DEGREES turn
+    (60° → 120° → 180° → …) until the path clears.
+    """
+
+    def __init__(self) -> None:
+        self._phase: str = "stop"  # "stop" → "turn" → "done"
+        self._phase_started_at: float | None = None
+
+    def reset(self) -> None:
+        self._phase = "stop"
+        self._phase_started_at = None
+
+    def step(self, motor: MotorController) -> str:
+        now = time.monotonic()
+
+        if self._phase_started_at is None:
+            self._phase_started_at = now
+
+        elapsed = now - self._phase_started_at
+
+        if self._phase == "stop":
+            if elapsed < cfg.SEARCH_INITIAL_STOP_SEC:
+                motor.stop()
+                return "obstacle-stop"
+            self._phase = "turn"
+            self._phase_started_at = now
+            elapsed = 0.0
+
+        if self._phase == "turn":
+            turn_dur = cfg.OBSTACLE_TURN_DEGREES * cfg.OBSTACLE_TURN_SEC_PER_DEGREE
+            if elapsed < turn_dur:
+                motor.spin_right(cfg.OBSTACLE_TURN_SPEED)
+                return "obstacle-turn-right"
+            # Turn complete — reset so the next frame starts a fresh 60°
+            # turn if the obstacle is still detected.
+            motor.stop()
+            self.reset()
+            return "obstacle-turn-done"
+
+        motor.stop()
+        return "obstacle-idle"
 
 
 # ─── state machine ───────────────────────────────────────────────────────────
@@ -194,6 +239,7 @@ def main() -> None:
     motor = MotorController(dry_run=args.dry_run)
     detector = WhiteLineDetector()
     searcher = LineSearcher()
+    avoider = ObstacleAvoider()
 
     sensors: Sensors | None = None
     if cfg.SENSORS_ENABLED and not args.no_sensors:
@@ -305,18 +351,22 @@ def main() -> None:
                 motor.stop()
                 steering_pid.reset()
                 searcher.reset()
+                avoider.reset()
 
             elif state == State.OBSTACLE:
                 steering_pid.reset()
-                searcher.step(motor)  # brief stop, then sweep
+                searcher.reset()
+                avoider.step(motor)  # brief stop, then 60° right turn
 
             elif state == State.FOLLOW:
                 searcher.reset()
+                avoider.reset()
                 left_speed, right_speed = steering_speeds(detection.offset_x)
                 motor.differential(left_speed, right_speed)
 
             elif state == State.SEARCH:
                 steering_pid.reset()
+                avoider.reset()
                 searcher.step(motor)
 
             # ── 4. LOG / RENDER ─────────────────────────────────────────────

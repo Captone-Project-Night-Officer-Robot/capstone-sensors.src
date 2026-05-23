@@ -101,10 +101,32 @@ class PiCamera2Camera:
                 print(f"[camera] WARNING: could not lock exposure ({exc})")
 
     def read(self) -> np.ndarray:
-        frame_rgb = self.picam2.capture_array()
+        frame = self.picam2.capture_array()
 
-        # OpenCV uses BGR.
-        return cv2.cvtColor(frame_rgb, cv2.COLOR_RGB2BGR)
+        # We asked for RGB888 but libcamera can fall back to a different
+        # format if the configured sensor is missing (e.g. CSI camera
+        # unplugged, USB UVC is picked up instead and returns YUYV). Be
+        # defensive about channel count.
+        if frame.ndim == 2:
+            # Grayscale → upsample to BGR so the rest of the pipeline can
+            # treat it uniformly.
+            return cv2.cvtColor(frame, cv2.COLOR_GRAY2BGR)
+
+        channels = frame.shape[2] if frame.ndim == 3 else 0
+        if channels == 3:
+            return cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
+        if channels == 4:
+            return cv2.cvtColor(frame, cv2.COLOR_RGBA2BGR)
+        if channels == 2:
+            # YUYV (Y0 U Y1 V) packed in 2 channels — happens when the
+            # actual sensor is a USB UVC cam exposing only YUYV. Unpack
+            # via the YUY2 → BGR conversion.
+            return cv2.cvtColor(frame, cv2.COLOR_YUV2BGR_YUY2)
+
+        raise RuntimeError(
+            f"PiCamera2Camera: unexpected frame shape {frame.shape}. "
+            "Is the CSI ribbon seated? Run `rpicam-hello --list-cameras`."
+        )
 
     def release(self) -> None:
         self.picam2.stop()
