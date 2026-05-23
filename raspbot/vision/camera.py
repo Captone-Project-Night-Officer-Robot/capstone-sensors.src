@@ -14,6 +14,8 @@ from typing import Protocol
 import cv2
 import numpy as np
 
+import raspbot.config as cfg
+
 
 class Camera(Protocol):
     def read(self) -> np.ndarray:
@@ -78,6 +80,25 @@ class PiCamera2Camera:
 
         self.picam2.configure(config)
         self.picam2.start()
+
+        # Optional exposure lock — prevents auto-exposure from blowing
+        # the sensor out under glare or sunlight. Wrapped in try/except
+        # because not every libcamera build accepts the same control
+        # names; the camera still works without it.
+        if cfg.CAMERA_FIX_EXPOSURE:
+            try:
+                self.picam2.set_controls({
+                    "AeEnable": False,
+                    "AwbEnable": False,
+                    "ExposureTime": int(cfg.CAMERA_EXPOSURE_TIME_US),
+                    "AnalogueGain": float(cfg.CAMERA_ANALOGUE_GAIN),
+                })
+                print(
+                    f"[camera] exposure locked: "
+                    f"{cfg.CAMERA_EXPOSURE_TIME_US}us gain={cfg.CAMERA_ANALOGUE_GAIN}"
+                )
+            except Exception as exc:
+                print(f"[camera] WARNING: could not lock exposure ({exc})")
 
     def read(self) -> np.ndarray:
         frame_rgb = self.picam2.capture_array()

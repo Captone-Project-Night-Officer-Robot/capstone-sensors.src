@@ -18,15 +18,32 @@ CAMERA_HEIGHT = 240
 CAMERA_FPS = 30
 USB_CAMERA_INDEX = 0
 
+# Fix exposure on the Pi camera (picamera2). When True, auto-exposure is
+# disabled and CAMERA_EXPOSURE_TIME_US / CAMERA_ANALOGUE_GAIN are forced.
+# Use this when glare / sunlight makes the sensor blow out and the line
+# detector loses contrast. Tune by running scripts.vision_test and
+# adjusting until the white line stays bright but the background does
+# NOT push V > WHITE_VALUE_MIN.
+#
+# Typical starting points:
+#   Bright outdoor / direct sunlight : 2000-4000 µs, gain 1.0
+#   Indoor fluorescent / daylight    : 6000-10000 µs, gain 1.0-2.0
+#   Dim indoor                       : 15000-25000 µs, gain 2.0-4.0
+CAMERA_FIX_EXPOSURE = False
+CAMERA_EXPOSURE_TIME_US = 8000
+CAMERA_ANALOGUE_GAIN = 1.0
+
 # Size of the debug visualisation windows (pixels). The camera frame is
 # upscaled to this size for display only — control logic still runs on the
 # original CAMERA_WIDTH x CAMERA_HEIGHT frame.
 DEBUG_WINDOW_WIDTH = 800
 DEBUG_WINDOW_HEIGHT = 600
 
-# Use only lower part of image.
-# 0.55 means ignore top 55%, use bottom 45%.
-ROI_TOP_RATIO = 0.55
+# Use only the lower portion of the image. 0.65 = ignore top 65%, use
+# bottom 35%. Narrower ROI = less far-away ceiling lights / floor glare
+# in view, more reliable line lock at the cost of shorter look-ahead.
+# Raise toward 0.75 if glare from far away keeps fooling the detector.
+ROI_TOP_RATIO = 0.65
 
 
 # -----------------------------
@@ -34,14 +51,26 @@ ROI_TOP_RATIO = 0.55
 # -----------------------------
 # White in HSV = high V (brightness), low S (saturation).
 # Lower WHITE_VALUE_MIN if the line isn't detected.
-# Raise it if background is detected as white.
-WHITE_VALUE_MIN = 180
+# Raise it if background light is detected as white.
+WHITE_VALUE_MIN = 200
 
-# Lower if bright colored objects are detected as the line.
-WHITE_SATURATION_MAX = 80
+# Lower if bright colored objects (sunlight tint, fluorescent glow) are
+# detected as the line. Pure white tape sits at near-zero saturation.
+WHITE_SATURATION_MAX = 60
 
 # Ignore small noise contours.
 MIN_CONTOUR_AREA = 350
+
+# Reject blobs larger than this fraction of the ROI — they're a wall,
+# whole-floor reflection, or huge glare patch, not a line. 0.0 disables.
+LINE_MAX_AREA_RATIO = 0.5
+
+# Require contours to be line-shaped: the rotated bounding rect's longer
+# side must be at least this many times the shorter side. A piece of
+# white tape viewed from above is typically 3-6×; glare blobs are < 2×.
+# Lower this if the robot loses the line on tight curves; raise it if
+# round glare patches still pass through.
+LINE_ASPECT_RATIO_MIN = 2.5
 
 # If the line center is within this many pixels of frame center, drive straight.
 CENTER_TOLERANCE_PX = 25
@@ -248,3 +277,14 @@ VOICE_MIC_BLOCK_MS = 20
 # capture task. ~20 × 20ms = 400ms of headroom. When full, the oldest
 # behavior is to drop new chunks (PortAudio keeps running).
 VOICE_MIC_QUEUE_MAX = 25
+
+# Software gain applied to TTS audio before it reaches the speaker. 1.0 =
+# no change. Values above 1.0 amplify; samples that would overflow int16
+# (±32767) are clipped (which sounds harsh at extreme settings).
+#
+# Try in this order if the agent is too quiet:
+#   1. Turn up the speaker's physical knob (if it has one).
+#   2. `alsamixer -c <UAC card>` → raise PCM/Master to 100%.
+#   3. Only then raise this value above 1.0.  1.5–2.0 is usually safe
+#      for ElevenLabs TTS; 3.0+ will start to clip on loud syllables.
+VOICE_SPEAKER_GAIN = 1.0

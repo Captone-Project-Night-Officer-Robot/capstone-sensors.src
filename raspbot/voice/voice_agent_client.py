@@ -255,11 +255,11 @@ class VoiceAgentClient:
             self._room = _lk_rtc.Room()
 
             @self._room.on("connected")
-            def _on_connected() -> None:
+            def _on_connected() -> None:  # noqa: ARG001  — registered via decorator
                 print(f"[voice] room CONNECTED ({session.room_name})")
 
             @self._room.on("track_subscribed")
-            def _on_subscribed(track, publication, participant) -> None:
+            def _on_subscribed(track, publication, participant) -> None:  # noqa: ARG001
                 if track.kind == _lk_rtc.TrackKind.KIND_AUDIO:
                     print(
                         f"[voice] subscribed audio track from "
@@ -269,7 +269,7 @@ class VoiceAgentClient:
                     self._spk_tasks.append(task)
 
             @self._room.on("disconnected")
-            def _on_disconnected(*_a) -> None:
+            def _on_disconnected(*_a) -> None:  # noqa: ARG001
                 print("[voice] room disconnected")
 
             await self._room.connect(session.livekit_url, session.token)
@@ -344,7 +344,7 @@ class VoiceAgentClient:
         loop = asyncio.get_running_loop()
         block_frames = max(1, int(sample_rate * cfg.VOICE_MIC_BLOCK_MS / 1000))
 
-        def _mic_callback(indata, frames, time_info, status):  # PortAudio thread
+        def _mic_callback(indata, frames, time_info, status):  # noqa: ARG001  PortAudio thread
             if status:
                 # Underrun/overflow flags. Log sparingly — they happen.
                 pass
@@ -463,6 +463,13 @@ class VoiceAgentClient:
 
                 samples = _np.frombuffer(frame.data, dtype=_np.int16)
                 channels = max(1, frame.num_channels)
+
+                # Optional software gain. Promote to int32 to avoid wrap-
+                # around, scale, then clip back into int16 range.
+                gain = cfg.VOICE_SPEAKER_GAIN
+                if gain != 1.0:
+                    scaled = samples.astype(_np.int32) * gain
+                    samples = _np.clip(scaled, -32768, 32767).astype(_np.int16)
 
                 with self._spk_stream_lock:
                     if self._spk_stream is None:
