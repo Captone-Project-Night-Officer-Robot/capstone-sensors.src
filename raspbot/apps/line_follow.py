@@ -1,20 +1,26 @@
 """
-Main app: follow a white line using Raspberry Pi camera, with ultrasonic + IR
-obstacle avoidance as an override layer.
+Main app: white-line follower with fall detection + voice handoff.
+
+Behavior priority each frame (highest first):
+    1. Voice session active        → STAY parked.
+    2. Fall detected               → STOP immediately, trigger voice session.
+    3. Obstacle within OBSTACLE_DISTANCE_CM → STOP, then sweep to search the
+                                    white line (find a heading that bypasses
+                                    the obstacle).
+    4. White line visible          → PID differential drive.
+    5. White line lost             → sweep search (alternating left/right).
 
 Examples:
 
-Pi camera:
+    # Pi camera, real run:
     python -m raspbot.apps.line_follow --camera picamera2
 
-USB camera:
-    python -m raspbot.apps.line_follow --camera usb --camera-index 0
-
-Safe debug mode, no motor movement:
+    # Safe dry-run (prints motor commands, wheels don't move):
     python -m raspbot.apps.line_follow --camera picamera2 --dry-run --debug
 
-Disable obstacle avoidance (sensors not wired yet):
-    python -m raspbot.apps.line_follow --camera picamera2 --no-avoidance
+    # Full production setup — stream + fall detection + voice:
+    python -m raspbot.apps.line_follow --camera picamera2 \\
+        --stream --fall-detection --voice --debug
 """
 
 from __future__ import annotations
@@ -22,12 +28,12 @@ from __future__ import annotations
 import argparse
 import os
 import time
+from enum import Enum
 
 import cv2
 
 import raspbot.config as cfg
-from raspbot.hardware.avoider import Avoider
-from raspbot.hardware.ir_sensors import IRReading
+from raspbot.hardware.avoider import Sensors
 from raspbot.hardware.motor import MotorController
 from raspbot.hardware.pid import PIDController
 from raspbot.vision.camera import create_camera
@@ -37,6 +43,8 @@ from raspbot.vision.white_line_detector import WhiteLineDetector, draw_debug
 from raspbot.voice.voice_agent_client import VoiceAgentClient
 
 
+# ─── steering ────────────────────────────────────────────────────────────────
+
 steering_pid = PIDController(
     kp=cfg.STEERING_PID_KP,
     ki=cfg.STEERING_PID_KI,
@@ -45,6 +53,81 @@ steering_pid = PIDController(
     integral_limit=cfg.STEERING_PID_INTEGRAL_LIMIT,
 )
 
+
+def steering_speeds(offset_x: int) -> tuple[int, int]:
+    """PID-driven differential drive. Returns (left_speed, right_speed)."""
+    base = cfg.FORWARD_SPEED
+    deadband = cfg.CENTER_TOLERANCE_PX
+
+    # Inside the deadband, drive straight but still feed 0 into the PID so the
+    # derivative term doesn't see a discontinuity at the deadband boundary.
+    error = 0.0 if abs(offset_x) <= deadband else float(offset_x)
+    correction = int(steering_pid.update(error))
+
+    if correction >= 0:
+        # offset positive → line is right of center → slow RIGHT wheel.
+        return (base, max(0, base - correction))
+
+    # offset negative → line is left of center → slow LEFT wheel.
+    return (max(0, base + correction), base)
+
+
+# ─── line searcher ───────────────────────────────────────────────────────────
+
+class LineSearcher:
+    """Brief stop, then alternating left/right sweep until the line is found.
+
+    Used both when the line is lost and when an obstacle blocks the path —
+    the spec says "stop and search the white line" in both cases.
+    """
+
+    def __init__(self) -> None:
+        self._direction = "right"
+        self._sweep_started: float | None = None
+        self._entered_at: float | None = None
+
+    def reset(self) -> None:
+        self._direction = "right"
+        self._sweep_started = None
+        self._entered_at = None
+
+    def step(self, motor: MotorController) -> str:
+        now = time.monotonic()
+
+        if self._entered_at is None:
+            self._entered_at = now
+
+        # Phase 1: brief stop on entry so the search visibly pauses.
+        if now - self._entered_at < cfg.SEARCH_INITIAL_STOP_SEC:
+            motor.stop()
+            return "stop"
+
+        # Phase 2: alternating sweep.
+        if self._sweep_started is None:
+            self._sweep_started = now
+        elif now - self._sweep_started >= cfg.SEARCH_SWEEP_SEC:
+            self._direction = "left" if self._direction == "right" else "right"
+            self._sweep_started = now
+
+        if self._direction == "right":
+            motor.spin_right(cfg.SEARCH_TURN_SPEED)
+        else:
+            motor.spin_left(cfg.SEARCH_TURN_SPEED)
+
+        return f"sweep-{self._direction}"
+
+
+# ─── state machine ───────────────────────────────────────────────────────────
+
+class State(Enum):
+    FOLLOW = "follow"
+    SEARCH = "search"
+    OBSTACLE = "obstacle"
+    FALL = "fall"
+    VOICE = "voice"
+
+
+# ─── helpers ─────────────────────────────────────────────────────────────────
 
 def _display_available() -> bool:
     return bool(os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY"))
@@ -58,149 +141,16 @@ def _gpio_cleanup() -> None:
         pass
 
 
-def decide_action(found: bool, offset_x: int | None) -> str:
-    if not found or offset_x is None:
-        return "lost"
-
-    if abs(offset_x) <= cfg.CENTER_TOLERANCE_PX:
-        return "forward"
-
-    if offset_x < 0:
-        return "left"
-
-    return "right"
-
-
-class LostLineSearcher:
-    """Sweeps right → left → right → left while the line is missing."""
-
-    def __init__(self) -> None:
-        self._direction = "right"
-        self._phase_start: float | None = None
-
-    def reset(self) -> None:
-        self._direction = "right"
-        self._phase_start = None
-
-    def step(self, motor: MotorController) -> str:
-        now = time.monotonic()
-
-        if self._phase_start is None:
-            self._phase_start = now
-        elif now - self._phase_start >= cfg.SEARCH_SWEEP_SEC:
-            self._direction = "left" if self._direction == "right" else "right"
-            self._phase_start = now
-
-        if self._direction == "right":
-            motor.spin_right(cfg.SEARCH_TURN_SPEED)
-        else:
-            motor.spin_left(cfg.SEARCH_TURN_SPEED)
-
-        return self._direction
-
-
-def approach_fallen(
-    motor: MotorController,
-    target: dict | None,
-    distance_cm: float,
-    frame_width: int,
-) -> str:
-    """Drive slowly toward the fallen person, halt at APPROACH_STOP_DISTANCE_CM.
-
-    Steering is proportional to the bbox center's horizontal offset from the
-    USB-camera frame center.
-    """
-    if distance_cm <= cfg.APPROACH_STOP_DISTANCE_CM:
-        motor.stop()
-        return f"arrived dist={distance_cm:.1f}cm"
-
-    if target is None:
-        motor.stop()
-        return "no-target"
-
-    x1, y1, x2, y2 = target["bbox"]
-    bbox_cx = (x1 + x2) / 2.0
-    offset = bbox_cx - (frame_width / 2.0)
-
-    base = cfg.APPROACH_SPEED
-    correction = int(offset * cfg.APPROACH_STEERING_GAIN)
-    max_corr = cfg.APPROACH_MAX_REDUCTION
-    if correction > max_corr:
-        correction = max_corr
-    elif correction < -max_corr:
-        correction = -max_corr
-
-    if correction > 0:
-        # Target is right of center → slow right wheel.
-        motor.differential(base, max(0, base - correction))
-    elif correction < 0:
-        motor.differential(max(0, base + correction), base)
-    else:
-        motor.differential(base, base)
-
-    return f"approach dist={distance_cm:.1f}cm offset={offset:+.0f}"
-
-
-def handle_lost_line(
-    motor: MotorController,
-    searcher: LostLineSearcher,
-    avoider: Avoider | None,
-) -> str:
-    """Decide motion when the white line is not visible.
-
-    Priority:
-      1. If IR sensors report an obstacle, turn away from it.
-      2. Otherwise, continue the left-right sweep search.
-    """
-    ir: IRReading = (
-        avoider.read_ir() if (avoider is not None and cfg.IR_ENABLED)
-        else IRReading(False, False)
-    )
-
-    if ir.left_blocked and ir.right_blocked:
-        motor.spin_right(cfg.SEARCH_TURN_SPEED)
-        return "ir-both -> spin right"
-
-    if ir.left_blocked:
-        motor.spin_right(cfg.SEARCH_TURN_SPEED)
-        return "ir-left -> spin right"
-
-    if ir.right_blocked:
-        motor.spin_left(cfg.SEARCH_TURN_SPEED)
-        return "ir-right -> spin left"
-
-    return f"sweep -> spin {searcher.step(motor)}"
-
-
-def steering_speeds(offset_x: int) -> tuple[int, int]:
-    """PID-driven differential drive. Returns (left_speed, right_speed)."""
-    base = cfg.FORWARD_SPEED
-    deadband = cfg.CENTER_TOLERANCE_PX
-
-    # Inside the deadband, drive straight but still feed 0 into the PID so the
-    # derivative term doesn't see a discontinuity when we cross the boundary.
-    error = 0.0 if abs(offset_x) <= deadband else float(offset_x)
-
-    correction = int(steering_pid.update(error))
-
-    if correction >= 0:
-        # offset positive → line is right of center → slow RIGHT wheel.
-        return (base, max(0, base - correction))
-
-    # offset negative → line is left of center → slow LEFT wheel.
-    return (max(0, base + correction), base)
-
-
-def main() -> None:
+def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("--camera", choices=["picamera2", "usb"], default="picamera2")
     parser.add_argument("--camera-index", type=int, default=cfg.USB_CAMERA_INDEX)
     parser.add_argument("--debug", action="store_true")
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument(
-        "--no-avoidance",
+        "--no-sensors",
         action="store_true",
-        help="Disable ultrasonic + IR obstacle avoidance.",
+        help="Disable ultrasonic + IR sensor init (use when sensors not wired).",
     )
     parser.add_argument(
         "--stream",
@@ -225,7 +175,13 @@ def main() -> None:
     )
     parser.add_argument("--voice-api", default=cfg.VOICE_API_URL)
     parser.add_argument("--voice-robot-id", default=cfg.VOICE_ROBOT_ID)
-    args = parser.parse_args()
+    return parser.parse_args()
+
+
+# ─── main loop ───────────────────────────────────────────────────────────────
+
+def main() -> None:
+    args = _parse_args()
 
     camera = create_camera(
         camera_type=args.camera,
@@ -237,24 +193,22 @@ def main() -> None:
 
     motor = MotorController(dry_run=args.dry_run)
     detector = WhiteLineDetector()
-    searcher = LostLineSearcher()
+    searcher = LineSearcher()
 
-    avoider: Avoider | None = None
-    if cfg.AVOIDANCE_ENABLED and not args.no_avoidance:
+    sensors: Sensors | None = None
+    if cfg.SENSORS_ENABLED and not args.no_sensors:
         try:
-            avoider = Avoider(simulate=args.dry_run)
-            print("[app] Obstacle avoidance enabled.")
+            sensors = Sensors(simulate=args.dry_run)
+            print("[app] Sensors enabled.")
         except Exception as exc:
-            print(f"[app] WARNING: avoidance disabled ({exc})")
-            avoider = None
+            print(f"[app] WARNING: sensors disabled ({exc})")
+            sensors = None
     else:
-        print("[app] Obstacle avoidance OFF.")
+        print("[app] Sensors OFF.")
 
     stream_server: MJPEGServer | None = None
     if args.stream:
-        stream_server = MJPEGServer(
-            port=args.stream_port, fps_cap=args.stream_fps
-        )
+        stream_server = MJPEGServer(port=args.stream_port, fps_cap=args.stream_fps)
         stream_server.start()
         print(
             f"[app] MJPEG stream live: open http://<pi-ip>:{args.stream_port}/ "
@@ -292,13 +246,10 @@ def main() -> None:
             print(f"[app] WARNING: fall detection disabled ({exc})")
             fall_client = None
 
-    print("[app] White-line follower started.")
-    print("[app] Stop with Ctrl+C.")
-
+    print("[app] White-line follower started. Stop with Ctrl+C.")
     if args.debug:
-        print("[app] Debug mode enabled. Press q to quit.")
+        print("[app] Debug mode enabled. Press q in the OpenCV window to quit.")
 
-    frame_idx = 0
     has_display = args.debug and _display_available()
     render_debug = has_display or stream_server is not None
 
@@ -307,172 +258,83 @@ def main() -> None:
             cv2.namedWindow(name, cv2.WINDOW_NORMAL)
             cv2.resizeWindow(name, cfg.DEBUG_WINDOW_WIDTH, cfg.DEBUG_WINDOW_HEIGHT)
 
+    frame_idx = 0
+    prev_state: State | None = None
+
     try:
         while True:
+            # ── 1. SENSE ────────────────────────────────────────────────────
             frame = camera.read()
-
-            # Highest-priority override: when a fall is detected, drive toward
-            # the fallen person and halt at APPROACH_STOP_DISTANCE_CM. The
-            # USB-camera stream keeps updating so the operator can see why.
-            if fall_client is not None:
-                fall_state = fall_client.state()
-                if stream_server is not None and fall_state.annotated_frame is not None:
-                    stream_server.push("fall", fall_state.annotated_frame)
-
-                if args.debug and frame_idx % 30 == 0:
-                    err = f"  err={fall_state.last_error}" if fall_state.last_error else ""
-                    age = time.time() - fall_state.last_update if fall_state.last_update else -1
-                    print(
-                        f"[fall] falling={fall_state.falling} "
-                        f"people={len(fall_state.people)} "
-                        f"infer={fall_state.infer_ms:.0f}ms "
-                        f"age={age:.1f}s{err}"
-                    )
-
-                if fall_state.falling:
-                    target = next(
-                        (p for p in fall_state.people if p.get("is_falling")),
-                        None,
-                    )
-                    distance_cm = (
-                        avoider.ultrasonic.latest_cm()
-                        if avoider is not None
-                        else float("inf")
-                    )
-                    frame_w = (
-                        fall_state.annotated_frame.shape[1]
-                        if fall_state.annotated_frame is not None
-                        else cfg.FALL_CAMERA_WIDTH
-                    )
-                    info = approach_fallen(motor, target, distance_cm, frame_w)
-                    arrived = info.startswith("arrived")
-                    if voice is not None:
-                        voice.tick(falling=True, arrived=arrived)
-                    if args.debug and frame_idx % 15 == 0:
-                        voice_tag = "  voice=ON" if voice and voice.is_active() else ""
-                        print(f"[fall→{info}]{voice_tag}")
-                    frame_idx += 1
-                    time.sleep(cfg.CONTROL_DELAY_SEC)
-                    continue
-
-                # A standing (non-falling) person is in the camera frame:
-                # keep a respectful safe distance. Triggers only when the
-                # ultrasonic also reports them being close ahead.
-                if (
-                    fall_state.people
-                    and avoider is not None
-                    and cfg.PERSON_KEEP_DISTANCE_CM > 0
-                ):
-                    person_dist = avoider.ultrasonic.latest_cm()
-                    if person_dist <= cfg.PERSON_KEEP_DISTANCE_CM:
-                        motor.stop()
-                        if args.debug and frame_idx % 30 == 0:
-                            print(
-                                f"[person] STOP dist={person_dist:.1f}cm "
-                                f"people={len(fall_state.people)} "
-                                f"(keep ≥ {cfg.PERSON_KEEP_DISTANCE_CM:.0f}cm)"
-                            )
-                        frame_idx += 1
-                        time.sleep(cfg.CONTROL_DELAY_SEC)
-                        continue
-
-            # Keep the car parked while a voice session is still active even
-            # if YOLO no longer flags a fall — we don't want to drive off
-            # mid-conversation. The voice client's end-debounce decides when
-            # to actually disconnect.
-            if voice is not None:
-                voice.tick(falling=False, arrived=False)
-                if voice.is_active():
-                    motor.stop()
-                    if args.debug and frame_idx % 30 == 0:
-                        print(f"[voice] holding (room={voice.current_room()})")
-                    frame_idx += 1
-                    time.sleep(cfg.CONTROL_DELAY_SEC)
-                    continue
-
-            # Ultrasonic-driven spin/backup avoidance. Gated by config —
-            # disabled by default so it does not fight the fall-approach
-            # logic (both use the same ultrasonic threshold).
-            if avoider is not None and cfg.ULTRASONIC_AVOIDANCE_ENABLED:
-                decision = avoider.evaluate()
-
-                if decision.blocked:
-                    if args.debug:
-                        print(
-                            f"[avoid] BLOCKED dist={decision.distance_cm:.1f}cm "
-                            f"ir=(L={decision.ir.left_blocked},"
-                            f"R={decision.ir.right_blocked}) "
-                            f"reason={decision.reason} -> spin {decision.direction}"
-                        )
-                    avoider.execute(motor, decision)
-                    frame_idx += 1
-                    continue
-
             detection = detector.detect(frame)
 
-            action = decide_action(detection.found, detection.offset_x)
+            fall_state = fall_client.state() if fall_client is not None else None
+            falling = bool(fall_state and fall_state.falling)
 
-            # Line-found-but-obstacle-ahead safety. Independent of the
-            # fall-approach path (which only fires when falling=True).
+            distance_cm = sensors.distance_cm() if sensors is not None else float("inf")
+            obstacle_ahead = (
+                sensors is not None and distance_cm <= cfg.OBSTACLE_DISTANCE_CM
+            )
+
+            # Push fall annotated frame to MJPEG stream regardless of state.
             if (
-                action != "lost"
-                and avoider is not None
-                and cfg.LINE_OBSTACLE_STOP_CM > 0
+                stream_server is not None
+                and fall_state is not None
+                and fall_state.annotated_frame is not None
             ):
-                line_dist = avoider.ultrasonic.latest_cm()
-                if line_dist <= cfg.LINE_OBSTACLE_STOP_CM:
-                    motor.stop()
-                    if args.debug and frame_idx % 30 == 0:
-                        print(
-                            f"[line] obstacle dist={line_dist:.1f}cm "
-                            f"<= {cfg.LINE_OBSTACLE_STOP_CM}cm  -> STOP (waiting)"
-                        )
-                    if render_debug:
-                        debug = draw_debug(frame, detection)
-                        if stream_server is not None:
-                            stream_server.push("main", debug)
-                            stream_server.push("mask", detection.mask)
-                    frame_idx += 1
-                    time.sleep(cfg.CONTROL_DELAY_SEC)
-                    continue
+                stream_server.push("fall", fall_state.annotated_frame)
 
-            lost_info = ""
-            if action == "lost":
-                # Reset PID so stale state doesn't cause a jerk on reacquire.
-                steering_pid.reset()
-                if cfg.STOP_WHEN_LINE_LOST:
-                    motor.stop()
-                else:
-                    lost_info = handle_lost_line(motor, searcher, avoider)
+            # Drive the voice client's debounce. We stop immediately on fall,
+            # so `arrived` always matches `falling`.
+            if voice is not None:
+                voice.tick(falling=falling, arrived=falling)
+
+            # ── 2. DECIDE ───────────────────────────────────────────────────
+            if voice is not None and voice.is_active():
+                state = State.VOICE
+            elif falling:
+                state = State.FALL
+            elif obstacle_ahead:
+                state = State.OBSTACLE
+            elif detection.found:
+                state = State.FOLLOW
             else:
+                state = State.SEARCH
+
+            # ── 3. ACT ──────────────────────────────────────────────────────
+            if state in (State.VOICE, State.FALL):
+                motor.stop()
+                steering_pid.reset()
+                searcher.reset()
+
+            elif state == State.OBSTACLE:
+                steering_pid.reset()
+                searcher.step(motor)  # brief stop, then sweep
+
+            elif state == State.FOLLOW:
                 searcher.reset()
                 left_speed, right_speed = steering_speeds(detection.offset_x)
                 motor.differential(left_speed, right_speed)
 
-            if args.debug and frame_idx % 15 == 0:
-                tail = f" {lost_info}" if lost_info else ""
-                print(
-                    f"[app] frame={frame_idx} found={detection.found} "
-                    f"offset={detection.offset_x} area={int(detection.area)} "
-                    f"action={action}{tail}"
-                )
+            elif state == State.SEARCH:
+                steering_pid.reset()
+                searcher.step(motor)
+
+            # ── 4. LOG / RENDER ─────────────────────────────────────────────
+            if args.debug and (state != prev_state or frame_idx % 30 == 0):
+                _log_state(state, detection, distance_cm, voice, fall_state, frame_idx)
 
             if render_debug:
                 debug = draw_debug(frame, detection)
-
                 if stream_server is not None:
                     stream_server.push("main", debug)
                     stream_server.push("mask", detection.mask)
-
                 if has_display:
                     cv2.imshow("vision-test", debug)
                     cv2.imshow("white-line-mask", detection.mask)
-
-                    key = cv2.waitKey(1) & 0xFF
-
-                    if key == ord("q"):
+                    if (cv2.waitKey(1) & 0xFF) == ord("q"):
                         break
 
+            prev_state = state
             frame_idx += 1
             time.sleep(cfg.CONTROL_DELAY_SEC)
 
@@ -485,13 +347,37 @@ def main() -> None:
             fall_client.stop()
         if stream_server is not None:
             stream_server.stop()
-        if avoider is not None:
-            avoider.cleanup()
+        if sensors is not None:
+            sensors.cleanup()
         motor.safe_stop()
         camera.release()
         cv2.destroyAllWindows()
         _gpio_cleanup()
         print("[app] Done.")
+
+
+def _log_state(
+    state: State,
+    detection,
+    distance_cm: float,
+    voice: VoiceAgentClient | None,
+    fall_state,
+    frame_idx: int,
+) -> None:
+    dist = "inf" if distance_cm == float("inf") else f"{distance_cm:.1f}cm"
+    line = (
+        f"found offset={detection.offset_x}" if detection.found else "lost"
+    )
+    extras = []
+    if fall_state is not None:
+        extras.append(f"falling={fall_state.falling}")
+    if voice is not None and voice.is_active():
+        extras.append(f"room={voice.current_room()}")
+    extras_str = "  " + "  ".join(extras) if extras else ""
+    print(
+        f"[app] frame={frame_idx} state={state.value:<8} "
+        f"line={line}  dist={dist}{extras_str}"
+    )
 
 
 if __name__ == "__main__":

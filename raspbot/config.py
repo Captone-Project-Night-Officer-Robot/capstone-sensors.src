@@ -1,8 +1,12 @@
 """
-Configuration for Raspberry Pi 4B Yahboom Pi4WD white-line tracking car.
+Configuration for the Yahboom Pi4WD line-follower robot.
 
-Start with default values.
-Tune only after camera/vision/motor tests pass.
+Behavior priority (highest first):
+  1. Voice session active        → STAY parked (don't drive mid-conversation)
+  2. Fall detected               → STOP immediately, trigger voice session
+  3. Obstacle within OBSTACLE_DISTANCE_CM → STOP, then sweep to search the line
+  4. White line visible          → PID differential drive along the line
+  5. White line lost             → sweep search (alternating left/right)
 """
 
 # -----------------------------
@@ -26,26 +30,23 @@ ROI_TOP_RATIO = 0.55
 
 
 # -----------------------------
-# White line detection settings
+# White line detection
 # -----------------------------
-# White in HSV:
-# - high V/value/brightness
-# - low S/saturation
-#
-# If white line is not detected, lower WHITE_VALUE_MIN.
-# If background is also detected, increase WHITE_VALUE_MIN.
+# White in HSV = high V (brightness), low S (saturation).
+# Lower WHITE_VALUE_MIN if the line isn't detected.
+# Raise it if background is detected as white.
 WHITE_VALUE_MIN = 180
 
-# If colored bright objects are detected, lower this.
+# Lower if bright colored objects are detected as the line.
 WHITE_SATURATION_MAX = 80
 
-# Ignore small noise.
+# Ignore small noise contours.
 MIN_CONTOUR_AREA = 350
 
-# If line center is within this many pixels from frame center, go forward.
+# If the line center is within this many pixels of frame center, drive straight.
 CENTER_TOLERANCE_PX = 25
 
-# Clean noisy mask.
+# Morphological open/close on the mask.
 USE_MORPHOLOGY = True
 
 
@@ -57,13 +58,13 @@ FORWARD_SPEED = 30
 TURN_SPEED = 45
 SEARCH_TURN_SPEED = 22
 
-# PID gains for steering. The PID converts pixel offset (line_x - frame_x)
-# into a wheel-speed correction.
+# PID gains for line steering. Converts pixel offset (line_x - frame_cx)
+# into a differential wheel-speed correction.
 #
 # Tuning order:
 #   1. Set KI=KD=0. Raise KP until the car holds the line but slightly wobbles.
-#   2. Add KD to damp the wobble (start small; high KD makes it twitchy).
-#   3. Only add KI if there's persistent off-center drift on straight lines.
+#   2. Add KD to damp the wobble (start small).
+#   3. Add KI only if there's persistent off-center drift on straight lines.
 #
 # Output is clamped to ±STEERING_PID_OUTPUT_LIMIT (wheel-speed units, 0-100).
 STEERING_PID_KP = 0.30
@@ -74,22 +75,20 @@ STEERING_PID_INTEGRAL_LIMIT = 200
 
 CONTROL_DELAY_SEC = 0.03
 
-# If True: stop the car when the line is lost.
-# If False: sweep right → left → right → left until the line is found again.
-STOP_WHEN_LINE_LOST = False
-
-# Duration of each sweep direction before reversing (seconds).
-# Lower = tighter sweep, higher = wider arc.
+# How long each sweep direction runs before reversing (seconds).
 SEARCH_SWEEP_SEC = 0.4
 
-# If movement direction is wrong, switch these.
+# Brief stop before sweep starts, so the search visibly pauses on obstacle
+# / line-lost transitions.
+SEARCH_INITIAL_STOP_SEC = 0.3
+
+# Flip these if motors run the wrong direction.
 INVERT_FORWARD = False
 INVERT_STEERING = False
 
 
 # -----------------------------
-# Yahboom Pi4WD GPIO pins
-# Based on official 4.Code/python/CarRun.py
+# Yahboom Pi4WD GPIO pins (from official 4.Code/python/CarRun.py)
 # -----------------------------
 
 IN1 = 20
@@ -104,20 +103,16 @@ PWM_FREQUENCY = 2000
 
 # -----------------------------
 # Ultrasonic obstacle sensor (HC-SR04)
-# BCM numbering. BCM 23 = BOARD 16, BCM 24 = BOARD 18
-# (matches Yahboom Raspbot hardware wiring).
+# BCM numbering. BCM 23 = BOARD 16, BCM 24 = BOARD 18.
 # -----------------------------
 
 ULTRASONIC_TRIG = 23
 ULTRASONIC_ECHO = 24
 
-# Trigger avoidance when obstacle is closer than this (cm).
-AVOID_DISTANCE_CM = 10.0
-
 # Background polling rate of the ultrasonic thread.
 ULTRASONIC_POLL_HZ = 20
 
-# Echo timeout. Longer = more tolerant of slow returns, but slows the poll loop.
+# Echo timeout. Longer = more tolerant of slow returns, but slower poll loop.
 ULTRASONIC_TIMEOUT_SEC = 0.03
 
 # Discard readings outside this band — sensor is unreliable there.
@@ -130,8 +125,7 @@ ULTRASONIC_MAX_CM = 200.0
 # BCM numbering. BCM 9 = BOARD 21, BCM 10 = BOARD 19, BCM 25 = BOARD 22.
 # -----------------------------
 
-# Set IR_ENABLED = False if the IR sensors are not wired on your board,
-# or while debugging ultrasonic alone.
+# Set False if IR is not wired or you want pure-camera sweep search.
 IR_ENABLED = False
 
 IR_LEFT_PIN = 9
@@ -141,118 +135,79 @@ IR_RIGHT_PIN = 10
 # Set to None if your board does not have one.
 IR_POWER_PIN = 25
 
-# Yahboom's official sensors are active-LOW (pin reads LOW when obstacle
-# detected). Some 3rd-party IR modules are active-HIGH. Flip this if your
-# sensors report "blocked" when nothing is in front of them.
+# Yahboom's stock IR sensors are active-LOW. Flip this if your 3rd-party
+# modules report "blocked" when nothing is in front of them.
 IR_ACTIVE_LOW = True
 
 
 # -----------------------------
-# Avoidance behavior
+# Obstacle behavior
 # -----------------------------
 
-# Master switch — set False to skip sensor init entirely.
-# When True, the ultrasonic + IR sensors are read every loop and their data is
-# made available to the fall-approach logic and the line-lost IR navigation,
-# REGARDLESS of ULTRASONIC_AVOIDANCE_ENABLED below.
-AVOIDANCE_ENABLED = True
+# Master switch for sensor init. Set False to skip ultrasonic/IR entirely
+# (e.g. when those sensors are not wired yet).
+SENSORS_ENABLED = True
 
-# Separate switch for the *behavior*. When True, the front ultrasonic
-# automatically triggers a stop+backup+spin maneuver at AVOID_DISTANCE_CM.
-# Set False to let fall detection be the ONLY thing that stops the car at
-# 10 cm — otherwise the two systems fight each other.
-ULTRASONIC_AVOIDANCE_ENABLED = False
-
-# Line-follow safety: when the line is detected AND something is closer than
-# this many cm, the car halts and waits for the obstacle to clear instead of
-# driving into it. Set to 0 to disable. Should be > APPROACH_STOP_DISTANCE_CM
-# so fall-approach can still close the last few cm.
-LINE_OBSTACLE_STOP_CM = 15.0
-
-# Short reverse before spin — helps unstick from a wall.
-AVOID_BACKUP_SEC = 0.15
-AVOID_BACKUP_SPEED = 30
-
-# Spin duration and speed when avoiding.
-AVOID_SPIN_SEC = 0.45
-AVOID_SPIN_SPEED = 35
+# When the front ultrasonic reports anything closer than this, the robot
+# STOPS and starts a sweep search for the white line (i.e. it tries to find
+# the line in a new heading that bypasses the obstacle).
+OBSTACLE_DISTANCE_CM = 20.0
 
 
 # -----------------------------
 # Fall detection (remote inference)
-# A USB camera on the car is read in a background thread and frames are POSTed
-# to the FastAPI server in capstone-falldetection.src (running on your laptop).
-# When `falling` is True, the car stops until the fall clears.
+# A USB camera on the car is read in a background thread and frames are
+# POSTed to the FastAPI server in capstone-falldetection.src (running on the
+# laptop). When `falling=True`, the car STOPS IMMEDIATELY and triggers the
+# voice agent.
 # -----------------------------
 
 # Replace with your laptop's IP — the one that runs server.py.
 FALL_SERVER_URL = "http://172.20.10.12:8000"
 
 # Which USB camera (cv2.VideoCapture index) to read from.
-# Note: the original app.py upscales to 980x740 before YOLO — at 320x240 the
-# model often misses people. 640x480 is a good balance for bandwidth vs.
-# detection quality.
 FALL_USB_CAMERA_INDEX = 0
 FALL_CAMERA_WIDTH = 640
 FALL_CAMERA_HEIGHT = 480
 
-# Frames per second sent to the server (don't need 30 — fall events are slow).
+# Frames per second sent to the server. Fall events are slow — 5 fps is
+# plenty and keeps wifi/CPU load low.
 FALL_TARGET_FPS = 5
 
 # JPEG quality of uploaded frames. 70 is a good size/quality balance.
 FALL_JPEG_QUALITY = 70
 
-# Per-request timeout (sec). Increase if your laptop is slow or wifi flaky.
+# Per-request HTTP timeout (sec). Increase if your laptop is slow.
 FALL_TIMEOUT_SEC = 2.0
 
 # If the server stops responding for this many seconds, the cached "falling"
 # state is forced back to False so the car doesn't sit forever.
 FALL_STALE_AFTER_SEC = 3.0
 
-# -- Approach-mode behavior when a fall is detected --
-# Instead of just stopping, the car drives slowly toward the fallen person
-# and halts when the ultrasonic reports the configured distance.
-APPROACH_SPEED = 25                # forward speed while approaching
-APPROACH_STOP_DISTANCE_CM = 10.0   # halt once obstacle is closer than this
-APPROACH_STEERING_GAIN = 0.15      # px-offset -> wheel-speed reduction
-APPROACH_MAX_REDUCTION = 20        # cap on the differential correction
-
-# -- Respectful distance for non-falling (standing) people --
-# When the USB camera sees a person but they are NOT falling, and the front
-# ultrasonic reports they are closer than this, the car stops and waits.
-# Resumes line-follow when the person steps away or leaves the camera frame.
-# Set to 0 to disable. Must be larger than APPROACH_STOP_DISTANCE_CM.
-PERSON_KEEP_DISTANCE_CM = 30.0
-
 
 # -----------------------------
 # Voice-agent integration (capstone.voice-src)
-# When the car has stopped next to a fallen person, it triggers a LiveKit
-# voice session so the Night Officer agent can speak with them while help is
-# on the way.
 # -----------------------------
 
 # Base URL of the FastAPI voice server (capstone.voice-src/src/main.py).
-# Same machine as the fall-detection server in our setup, on its own port.
 VOICE_API_URL = "http://172.20.10.12:8001"
 
 # Identifier reported to the voice API as `robot_id`.
 VOICE_ROBOT_ID = "raspbot-01"
 
-# Debounce: only start a voice session after the car has been arrived-at-fall
-# (stopped at APPROACH_STOP_DISTANCE_CM) for this many seconds.
+# Debounce: only start a voice session after the car has been stopped on a
+# detected fall for this many seconds. Keeps brief YOLO flickers from
+# triggering the agent.
 VOICE_TRIGGER_STOP_SECONDS = 1.0
 
-# End the session when no fall has been detected for this long.
-# 15 s is a sensible default — long enough that YOLO flickers don't drop the
-# session, short enough that the agent doesn't talk to thin air forever.
-# For a real triage scenario, 30–60 s is reasonable.
+# End the voice session when `falling` has been False this long.
+# 15s is the production default — long enough that YOLO flickers don't
+# drop the session, short enough that the agent doesn't talk to thin air.
 VOICE_END_AFTER_NO_FALL_SECONDS = 15.0
 
 # HTTP timeout for the session-start call.
 VOICE_API_TIMEOUT_SEC = 5.0
 
 # After a failed session-start (server down, wrong URL, etc.) wait this long
-# before retrying. Prevents the log from filling up when the voice API isn't
-# running.
+# before retrying. Prevents the log from filling up.
 VOICE_RETRY_COOLDOWN_SEC = 5.0

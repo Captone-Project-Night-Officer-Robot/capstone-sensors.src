@@ -1,54 +1,35 @@
-# Raspberry Pi 4B Yahboom Pi4WD White-Line Tracking Car
+# Raspberry Pi 4B Yahboom Pi4WD — White-Line Tracking Robot
 
-This is the final source code for your **Yahboom Raspberry Pi 4WD car** using **Raspberry Pi 4B** and camera-based **white-line tracking**.
+Production source for the Yahboom Raspberry Pi 4WD car running on a
+Raspberry Pi 4B. Camera-based **white-line tracking** with **obstacle stop +
+line search**, **remote fall detection** (YOLO on your laptop), and a
+**LiveKit voice agent** that talks to a fallen person until help arrives.
 
-Your official Yahboom package has:
+---
+
+## Behavior in one picture
+
+Each control-loop frame, the robot picks exactly one state, in this priority
+order (highest first):
+
+| # | State      | Trigger                                         | Action                                  |
+|---|------------|-------------------------------------------------|-----------------------------------------|
+| 1 | `VOICE`    | A voice session is active                       | STAY parked. Don't drive mid-conversation. |
+| 2 | `FALL`     | YOLO says someone is falling                    | STOP immediately. Voice agent is triggered. |
+| 3 | `OBSTACLE` | Ultrasonic ≤ `OBSTACLE_DISTANCE_CM`             | STOP, then sweep to **search the white line** (find a heading that bypasses the obstacle). |
+| 4 | `FOLLOW`   | White line visible                              | PID differential drive along the line.  |
+| 5 | `SEARCH`   | White line not visible                          | Alternating left/right sweep until the line is reacquired. |
+
+End-to-end flow the robot performs:
 
 ```text
-4.Code/python/CarRun.py
-```
-
-So this project does **not** require `YB_Pcb_Car.py`.
-
-This project uses the same motor GPIO pin layout as Yahboom `CarRun.py`:
-
-```python
-IN1 = 20
-IN2 = 21
-IN3 = 19
-IN4 = 26
-ENA = 16
-ENB = 13
+follow line  →  obstacle ahead  →  stop + sweep  →  line found again  →  follow
+follow line  →  fall detected   →  stop + voice  →  conversation ends  →  search → follow
 ```
 
 ---
 
-# What this project does
-
-The car follows a **white line / white tape** on a darker floor, and
-**avoids obstacles** using ultrasonic + dual IR sensors as an override layer.
-
-```text
-Camera frame ─→ detect white line ─→ line action ─┐
-                                                  ├─→ motor
-Ultrasonic + IR ─→ avoid decision ────────────────┘
-                  (overrides line action when blocked)
-```
-
-Per frame:
-
-```text
-1. Read ultrasonic distance (latest sample from background thread)
-2. Read both IR sensors
-3. If distance < AVOID_DISTANCE_CM or either IR is blocked:
-       stop → short reverse → spin away from obstacle → resume
-   else:
-       run normal white-line tracking
-```
-
----
-
-# Project structure
+## Project structure
 
 ```text
 capstone-sensors.src/
@@ -59,37 +40,52 @@ capstone-sensors.src/
 ├── raspbot/
 │   ├── config.py
 │   ├── apps/
-│   │   └── line_follow.py
+│   │   └── line_follow.py        # main app + state machine
 │   ├── hardware/
-│   │   ├── motor.py
-│   │   ├── YB_Pcb_Car.py
-│   │   ├── ultrasonic.py        # HC-SR04, background-thread polling
-│   │   ├── ir_sensors.py        # dual IR (active-low)
-│   │   └── avoider.py           # fuses sensors + override layer
+│   │   ├── motor.py              # YB_Pcb_Car driver
+│   │   ├── ultrasonic.py         # HC-SR04, background-thread polling
+│   │   ├── ir_sensors.py         # dual IR (active-low)
+│   │   ├── avoider.py            # Sensors aggregator (ultrasonic + IR)
+│   │   └── pid.py
 │   ├── vision/
 │   │   ├── camera.py
 │   │   ├── white_line_detector.py
-│   │   ├── mjpeg_server.py      # live debug view in a browser
-│   │   └── fall_detector.py     # USB camera -> remote YOLO server
+│   │   ├── mjpeg_server.py       # live debug view in a browser
+│   │   └── fall_detector.py      # USB camera -> remote YOLO server
 │   └── voice/
-│       └── voice_agent_client.py  # triggers LiveKit voice session
+│       └── voice_agent_client.py # triggers LiveKit voice session
 └── scripts/
     ├── camera_test.py
-    ├── clone_yahboom_repo.sh
-    ├── install_pi.sh
     ├── motor_test.py
-    ├── show_yahboom_pins.py
     ├── vision_test.py
-    └── avoid_test.py            # sensors-only, no motors
+    ├── avoid_test.py             # sensors-only, no motors
+    └── show_yahboom_pins.py
 ```
 
 ---
 
-# Option A — Recommended: use this project directly
+## Motor pin layout
 
-Use this option first. It is simpler and does not require copying Yahboom files.
+Matches the official Yahboom `4.Code/python/CarRun.py`:
 
-## Step 1: Copy/unzip project on Raspberry Pi
+```python
+IN1 = 20
+IN2 = 21
+IN3 = 19
+IN4 = 26
+ENA = 16
+ENB = 13
+```
+
+The Yahboom Raspbot driver IC (STM8 @ I2C `0x16` → AT8236) is wired to I2C,
+not directly to GPIO — motor commands go through `YB_Pcb_Car.py`, which lives
+at `raspbot/hardware/YB_Pcb_Car.py`.
+
+---
+
+# Install
+
+## 1. Copy the project onto the Pi
 
 ```bash
 cd
@@ -97,9 +93,9 @@ unzip capstone-sensors.src.zip
 cd capstone-sensors.src
 ```
 
-## Step 2: Install dependencies
+## 2. Install dependencies
 
-You can run the install script:
+Use the install script:
 
 ```bash
 bash scripts/install_pi.sh
@@ -110,300 +106,190 @@ Or manually:
 ```bash
 sudo apt update
 sudo apt install -y python3-pip python3-venv python3-opencv python3-picamera2 python3-rpi.gpio git
-
 python3 -m venv .venv --system-site-packages
 source .venv/bin/activate
 python -m pip install --upgrade pip
 pip install -r requirements.txt
 ```
 
-Why `--system-site-packages`?
-
-Because `picamera2` and `RPi.GPIO` are usually installed by `apt`, not by `pip`.
+`--system-site-packages` is required so the venv can see the `apt`-installed
+`picamera2` and `RPi.GPIO`.
 
 ---
 
-# Step 3: Test camera
+# Bring-up tests
 
-For Raspberry Pi Camera Module:
+Run these in order before the first real-car run. Each one isolates one
+subsystem so failures point at one piece of hardware.
+
+## 1. Camera
+
+Pi camera:
 
 ```bash
 source .venv/bin/activate
 python -m scripts.camera_test --camera picamera2
 ```
 
-For USB camera:
+USB camera:
 
 ```bash
-source .venv/bin/activate
 python -m scripts.camera_test --camera usb --camera-index 0
 ```
 
 Press `q` to quit.
 
----
-
-# Step 4: Test white-line detection only
-
-This does **not** move motors.
+## 2. White-line detection (no motors)
 
 ```bash
-source .venv/bin/activate
 python -m scripts.vision_test --camera picamera2
 ```
 
-You will see two windows:
+Two windows open: `vision-test` (annotated) and `white-line-mask`. In the
+mask, the white line must be white and everything else mostly black. If not,
+tune `WHITE_VALUE_MIN` / `WHITE_SATURATION_MAX` in `raspbot/config.py`.
 
-```text
-vision-test
-white-line-mask
-```
-
-In `white-line-mask`:
-
-```text
-white line should be white
-background should be mostly black
-```
-
-If the white line is not detected, tune `raspbot/config.py`.
-
----
-
-# Step 4b: Test obstacle sensors only
-
-This does **not** move motors. Confirms wiring of HC-SR04 + IR sensors.
+## 3. Obstacle sensors (no motors)
 
 ```bash
-source .venv/bin/activate
 python -m scripts.avoid_test
 ```
 
-Expected output every 0.2 s:
+Expected output (every 0.2 s):
 
 ```text
-clear    distance=  87.4 cm   IR L=0 R=0
-clear    distance=  42.1 cm   IR L=0 R=0
-BLOCKED  distance=  12.8 cm   IR L=0 R=0
-BLOCKED  distance=  35.7 cm   IR L=1 R=0
+clear    distance=  87.4 cm   IR raw=(L=1,R=1)   blocked=(L=0,R=0)
+BLOCKED  distance=  12.8 cm   IR raw=(L=1,R=1)   blocked=(L=0,R=0)
+BLOCKED  distance=  35.7 cm   IR raw=(L=0,R=1)   blocked=(L=1,R=0)
 ```
 
 Quick sanity checks:
-- Wave your hand 10 cm in front of the sensor → `BLOCKED ... distance=~10 cm`
-- Cover the **left** IR → `IR L=1 R=0`
-- Cover the **right** IR → `IR L=0 R=1`
+- Wave your hand 10 cm in front of HC-SR04 → `BLOCKED  distance=~10 cm`
+- Cover left IR → `blocked=(L=1,R=0)`
+- Cover right IR → `blocked=(L=0,R=1)`
 
-If `distance` is always `inf`, check `TRIG`/`ECHO` wiring or BCM pin numbers in `config.py`.
-If IR `L`/`R` are stuck on `1`, your sensor pots are too sensitive — turn them down.
+If `distance` is always `inf`, check `ULTRASONIC_TRIG` / `ULTRASONIC_ECHO`
+wiring or BCM pin numbers in `config.py`. If IR readings are stuck on `1`,
+turn the sensor pots down.
 
----
+## 4. Motors (wheels off the floor!)
 
-# Step 5: Test motors only
-
-Put the car on a box/stand so wheels do not touch the floor.
+Put the car on a box. Then:
 
 ```bash
-source .venv/bin/activate
 python -m scripts.motor_test
 ```
 
 Expected sequence:
 
 ```text
-Forward
-Stop
-Spin left
-Stop
-Spin right
-Stop
-Back
-Final stop
+Forward → Stop → Spin left → Stop → Spin right → Stop → Back → Final stop
 ```
 
-If movement direction is wrong, edit:
+If a direction is wrong, edit `raspbot/config.py`:
+
+```python
+INVERT_FORWARD = True    # forward/back swapped
+INVERT_STEERING = True   # left/right swapped
+```
+
+## 5. Full app, dry-run (safest end-to-end check)
 
 ```bash
-nano raspbot/config.py
-```
-
-Then change:
-
-```python
-INVERT_FORWARD = False
-INVERT_STEERING = False
-```
-
-Examples:
-
-```python
-INVERT_FORWARD = True
-```
-
-or:
-
-```python
-INVERT_STEERING = True
-```
-
----
-
-# Step 6: Full tracking test without motor movement
-
-This is the safest full test.
-
-```bash
-source .venv/bin/activate
 python -m raspbot.apps.line_follow --camera picamera2 --dry-run --debug
 ```
 
-The terminal will print motor commands, but wheels will not move.
-
-Example:
+Motor commands print but wheels don't move. Expected log lines:
 
 ```text
-[motor] forward speed=35
-[motor] spin_left speed=30
-[motor] spin_right speed=30
-[motor] stop
+[app] Sensors enabled.
+[app] White-line follower started. Stop with Ctrl+C.
+[app] frame=0   state=follow   line=found offset=-3   dist=inf
+[app] frame=30  state=search   line=lost              dist=inf
+[app] frame=60  state=obstacle line=found offset=12   dist=12.4cm
 ```
 
 ---
 
-# Step 7: Run real car
+# Run the real car
 
-Put the car on the white-line track.
+## Line-following only
 
 ```bash
-source .venv/bin/activate
 python -m raspbot.apps.line_follow --camera picamera2
 ```
 
-If obstacle sensors are wired, avoidance is **on by default**. To bypass it:
+Stop with `Ctrl+C`.
+
+Skip sensor init (e.g., HC-SR04 not wired yet):
 
 ```bash
-python -m raspbot.apps.line_follow --camera picamera2 --no-avoidance
+python -m raspbot.apps.line_follow --camera picamera2 --no-sensors
 ```
 
-Stop:
+## Add the MJPEG dashboard (recommended for headless SSH)
 
 ```bash
-Ctrl+C
-```
-
----
-
-# Step 8: Watch the camera from your laptop (MJPEG stream)
-
-When you SSH into the Pi headless, `cv2.imshow` can't show anything on your
-laptop. The app can instead serve the debug view over HTTP so you can open it
-in any browser.
-
-## Start with streaming enabled
-
-On the Pi (over SSH):
-
-```bash
-source .venv/bin/activate
 python -m raspbot.apps.line_follow --camera picamera2 --stream
 ```
 
-You will see:
+You'll see:
 
 ```text
 [app] MJPEG stream live: open http://<pi-ip>:8080/ in a browser on your laptop.
 ```
 
-## Find the Pi's IP
+Find the Pi's IP with `hostname -I`, then open `http://<pi-ip>:8080/` on
+your laptop. Two side-by-side feeds appear:
 
-On the Pi:
+```text
+left  → annotated video (line center, deadband, action overlay)
+right → white-line mask
+```
+
+Direct URLs for OBS/VLC/`curl`:
+
+```text
+http://<pi-ip>:8080/stream.mjpg   → annotated
+http://<pi-ip>:8080/mask.mjpg     → mask
+```
+
+Options:
 
 ```bash
-hostname -I
+--stream-port 9000     # different port
+--stream-fps 8         # drop stream FPS (control loop is unaffected)
+--stream --debug       # stream + console logs
 ```
-
-Example output:
-
-```text
-192.168.1.42
-```
-
-## Open it on your laptop
-
-In any browser:
-
-```text
-http://192.168.1.42:8080/
-```
-
-You'll see two side-by-side feeds:
-
-```text
-left   → annotated video (line center, deadband, action overlay)
-right  → white-line mask (what the detector sees)
-```
-
-Direct stream URLs (useful for OBS / VLC / `curl`):
-
-```text
-http://192.168.1.42:8080/stream.mjpg   → annotated
-http://192.168.1.42:8080/mask.mjpg     → mask
-```
-
-## Options
-
-```bash
-# Different port:
-python -m raspbot.apps.line_follow --camera picamera2 --stream --stream-port 9000
-
-# Reduce bandwidth (drop stream FPS):
-python -m raspbot.apps.line_follow --camera picamera2 --stream --stream-fps 8
-
-# Stream + console debug logs at the same time:
-python -m raspbot.apps.line_follow --camera picamera2 --stream --debug
-```
-
-## Notes
-
-- The stream is opt-in. Skip `--stream` for competition runs.
-- The Pi and your laptop must be on the same Wi-Fi network.
-- The control loop runs at full speed regardless of `--stream-fps`; the cap
-  only limits how often frames are pushed to viewers.
-- Multiple browser tabs / viewers can connect simultaneously.
 
 ---
 
-# Step 9: Run with remote fall detection
+# Fall detection
 
-This stops the car whenever a connected USB camera (the second camera on the
-car, pointed at people) sees someone falling. YOLO inference runs **on your
-laptop**, not on the Pi — far faster than running it on the Pi 4B itself.
-
-## How it works
+This stops the car the moment a separate USB camera (mounted to face people)
+sees someone falling. YOLO runs **on your laptop**, not on the Pi.
 
 ```text
-Pi camera  ─┐
-            ├─→  line-follow + obstacle avoidance + motors (main thread)
-Sensors    ─┘                ▲
+Pi camera  ──┐
+             ├─→  line-follow + obstacle stop + motors      (main thread)
+Sensors   ──┘                ▲
                              │  stop while falling=True
-USB camera ─→ JPEG ─HTTP─→ Laptop YOLO server ─JSON─→ Pi (background thread)
+USB camera ─→ JPEG ─HTTP─→ Laptop YOLO server ─JSON─→ Pi    (background)
                              │
                        /fall.mjpg ─→ laptop browser
 ```
 
-## A. Start the inference server on your laptop
-
-In **`capstone-falldetection.src`** (on the laptop, not the Pi):
+## A. Start the YOLO server on the laptop
 
 ```bash
 cd capstone-falldetection.src
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
-
 python server.py --model best_falling.pt --port 8000
 ```
 
-You should see:
+Expected:
 
 ```text
 Loading best_falling.pt...
@@ -411,52 +297,36 @@ Model loaded. Classes: {0: 'fall', 1: 'no_fall'}
 Listening on http://0.0.0.0:8000
 ```
 
-Find your laptop's IP. macOS:
-
-```bash
-ipconfig getifaddr en0
-```
-
-Linux:
-
-```bash
-hostname -I
-```
-
-Confirm the server is reachable from another machine on the same network:
+Find the laptop IP (macOS `ipconfig getifaddr en0`, Linux `hostname -I`),
+then sanity-check:
 
 ```bash
 curl http://<laptop-ip>:8000/health
+# {"status":"ok","model":"best_falling.pt"}
 ```
 
-Expected: `{"status":"ok","model":"best_falling.pt"}`.
+## B. Point the Pi at the server
 
-## B. Tell the car where the server lives
-
-On the Pi, edit `raspbot/config.py`:
+`raspbot/config.py`:
 
 ```python
-FALL_SERVER_URL = "http://192.168.1.55:8000"   # <-- your laptop's IP
+FALL_SERVER_URL = "http://192.168.1.55:8000"   # ← your laptop IP
 ```
 
-(Or pass `--fall-server http://...` on the command line every time.)
+Or pass `--fall-server http://...` on the CLI.
 
-## C. Plug the USB camera into the Pi
-
-Find which video device it is:
+## C. Plug in the USB camera and pick the index
 
 ```bash
 ls /dev/video*
 ```
 
-Usually `/dev/video0` (index `0`). If you also have the Pi CSI camera attached,
-the USB camera may show up at a higher index — set it via `FALL_USB_CAMERA_INDEX`
-in `config.py` or pass `--fall-camera-index 2`.
+Pass `--fall-camera-index N` or set `FALL_USB_CAMERA_INDEX = N` in
+`config.py`.
 
-## D. Run the car with fall detection + stream
+## D. Run with fall detection + stream
 
 ```bash
-source .venv/bin/activate
 python -m raspbot.apps.line_follow \
     --camera picamera2 \
     --stream \
@@ -464,24 +334,16 @@ python -m raspbot.apps.line_follow \
     --debug
 ```
 
-Expected log lines:
+Expected log:
 
 ```text
-[app] MJPEG stream live: open http://<pi-ip>:8080/ in a browser on your laptop.
-[app] Obstacle avoidance enabled.
+[app] Sensors enabled.
+[app] MJPEG stream live: open http://<pi-ip>:8080/ ...
 [app] Fall detection ON. Server: http://192.168.1.55:8000
-[app] White-line follower started.
+[app] White-line follower started. Stop with Ctrl+C.
 ```
 
-## E. Open the dashboard
-
-In your laptop browser:
-
-```text
-http://<pi-ip>:8080/
-```
-
-You'll see **three** live feeds:
+The dashboard now shows **three** feeds:
 
 ```text
 ┌──────────────────┬──────────────────┬──────────────────┐
@@ -490,121 +352,106 @@ You'll see **three** live feeds:
 └──────────────────┴──────────────────┴──────────────────┘
 ```
 
-When a fall is detected, the third panel gets a red banner reading **FALL
-DETECTED**, and the car stops. As soon as the person stands up (or the state
-goes stale after `FALL_STALE_AFTER_SEC` seconds), the car resumes.
+When a fall is detected, the third panel gets a **FALL DETECTED** banner and
+the car stops immediately. Once the person is up (or YOLO goes stale after
+`FALL_STALE_AFTER_SEC`), the car returns to its normal `FOLLOW` / `SEARCH`
+behavior.
 
-## F. Behavior priority on the car
+## Troubleshooting
 
-Higher = wins:
+| Symptom                                                              | Fix                                                                              |
+|----------------------------------------------------------------------|----------------------------------------------------------------------------------|
+| `WARNING: fall detection disabled (USB camera index 0 did not open)` | Plug in the USB camera; check `ls /dev/video*`; pass `--fall-camera-index N`     |
+| `[fall] server error: ConnectionError`                               | Server not running, wrong IP, or different network                               |
+| `[fall] server error: ReadTimeout`                                   | Inference too slow → lower `FALL_TARGET_FPS` to 2, or switch to `yolov8n.pt`     |
+| Car never stops when faking a fall                                   | Lower `--conf` on the server (try `--conf 0.20`)                                 |
+| Fall panel always blank                                              | Pass **both** `--fall-detection` AND `--stream`                                  |
 
-```text
-1. Fall detection            → STOP (until cleared)
-2. Front ultrasonic < AVOID_DISTANCE_CM → stop + backup + spin
-3. Line found                → PID differential drive
-4. Line lost + IR triggered  → turn away from blocked side
-5. Line lost + no IR signal  → sweep search
-```
-
-## G. Troubleshooting
-
-| Symptom | Fix |
-|---|---|
-| `WARNING: fall detection disabled (USB camera index 0 did not open)` | Plug in the USB camera; check `ls /dev/video*`; pass `--fall-camera-index N` |
-| `[fall] server error: ConnectionError` overlay | Server not running, wrong IP, or different network |
-| `[fall] server error: ReadTimeout` | Inference too slow → lower `FALL_TARGET_FPS` to 2, or switch to `yolov8n.pt` on the server |
-| Car never stops when faking a fall | Lower `--conf` on the server (try `--conf 0.20`) |
-| Fall panel always blank | Make sure you passed `--fall-detection` AND `--stream` |
-| Both cameras conflict | The USB cam and CSI cam are independent; confirm with `vcgencmd get_camera` for CSI and `ls /dev/video*` for USB |
-
-## H. Run without the car (server-only smoke test)
-
-To test the server alone with the laptop's own webcam:
+Server-only smoke test (no car):
 
 ```bash
-# On the laptop
 cd capstone-falldetection.src
 source .venv/bin/activate
-python app.py    # original standalone demo, uses laptop webcam
+python app.py    # standalone demo using the laptop webcam
 ```
 
 ---
 
-# Step 10: Voice agent — talk to the fallen person
+# Voice agent
 
-When the car is stopped next to a fallen person, it triggers a LiveKit voice
-session via the Night Officer agent (`capstone.voice-src`). The agent greets
-calmly and stays in conversation until the person stands up.
-
-## How it works
+When the car stops on a detected fall, it calls the FastAPI voice server
+(`capstone.voice-src`) to mint a LiveKit token, joins the room, and the
+worker dispatches the `NightOfficerAgent`. The agent talks to the person
+until YOLO has reported `falling=False` for `VOICE_END_AFTER_NO_FALL_SECONDS`.
 
 ```text
-Pi (fall + arrived at 10 cm, held for 1 s)
+Pi (state=FALL, debounced VOICE_TRIGGER_STOP_SECONDS)
    │
-   ├─ POST /api/v1/session/start  →  laptop voice API on port 8001
+   ├─ POST /api/v1/session/start  →  voice API on laptop port 8001
    │                                  returns { token, room_name, livekit_url }
    ▼
-Pi joins LiveKit room (silent participant for now)
+Pi joins LiveKit room (silent participant in Phase 1)
    │
    ▼
-Voice worker dispatches NightOfficerAgent into that room
+Voice worker dispatches NightOfficerAgent into the room
    │   Krisp BVC → Silero VAD → Eleven STT → Groq Llama → Eleven TTS
    ▼
-TTS audio is published into the room (and will play through the Pi speaker
-once audio I/O is wired in Phase 2).
-
-When `falling=False` is observed for 3 s → Pi ends the session → resumes line.
+Agent TTS streams into the room. Pi stays in state=VOICE — motors locked.
+   │
+   ▼
+YOLO reports falling=False for VOICE_END_AFTER_NO_FALL_SECONDS
+   │
+   ▼
+Pi leaves the room. State falls through to SEARCH → FOLLOW.
 ```
 
 ## Phase 1 vs Phase 2
 
-| Phase | What works | What's needed |
-|---|---|---|
-| **Phase 1 (now)** | API trigger + LiveKit room connection + worker dispatch + agent enters room | `pip install livekit` on the Pi. Verifies whole pipeline; no audible audio yet. |
-| **Phase 2 (when mic + speaker are wired)** | Live two-way voice conversation | Add `sounddevice`, wire `AudioSource` (mic) and audio-frame routing (speaker). |
+| Phase                    | What works                                              | What's needed                                          |
+|--------------------------|---------------------------------------------------------|--------------------------------------------------------|
+| **Phase 1 (now)**        | Token mint + LiveKit room connection + worker dispatch  | `pip install livekit` on the Pi. No audio I/O yet.     |
+| **Phase 2 (mic+speaker)**| Live two-way voice conversation                         | Add `sounddevice` + AudioSource (mic) + frame routing  |
 
-## A. Run the voice server on your laptop
-
-In a third terminal on the laptop:
+## A. Run the voice server on the laptop
 
 ```bash
 cd capstone.voice-src
 source .venv/bin/activate
 
-# FastAPI HTTP service (mints LiveKit tokens):
+# Terminal 2: FastAPI HTTP service (mints LiveKit tokens):
 uvicorn src.main:app --port 8001
 
-# In another laptop terminal — the agent worker:
-python -m src.worker dev    # or `console` for local mic test
+# Terminal 3: agent worker:
+python -m src.worker dev
 ```
 
-Make sure `.env` in `capstone.voice-src` has valid keys:
+`capstone.voice-src/.env` must define:
 `LIVEKIT_URL`, `LIVEKIT_API_KEY`, `LIVEKIT_API_SECRET`, `GROQ_API_KEY`,
-`ELEVEN_API_KEY`, `ELEVEN_VOICE_ID`.
+`ELEVEN_API_KEY`, `ELEVEN_VOICE_ID`. Keep `.env` **gitignored** — rotate
+any key that has been committed.
 
-## B. Tell the car where the voice API lives
+## B. Point the Pi at the voice API
 
-Edit `raspbot/config.py`:
+`raspbot/config.py`:
 
 ```python
-VOICE_API_URL = "http://192.168.1.55:8001"   # ← your laptop's IP, port 8001
+VOICE_API_URL = "http://192.168.1.55:8001"
 VOICE_ROBOT_ID = "raspbot-01"
 ```
 
-## C. Install LiveKit on the Pi (one time)
+## C. Install LiveKit on the Pi (one-time)
 
 ```bash
 source .venv/bin/activate
 pip install livekit
 ```
 
-If you skip this step, the trigger still fires and logs the session, but the
-Pi never joins the room, so the agent isn't dispatched.
+Without this, the session is logged but the Pi never joins the room, so the
+worker isn't dispatched.
 
-## D. Run the car with everything on
+## D. Run with everything on
 
 ```bash
-source .venv/bin/activate
 python -m raspbot.apps.line_follow \
     --camera picamera2 \
     --stream \
@@ -613,439 +460,312 @@ python -m raspbot.apps.line_follow \
     --debug
 ```
 
-Expected log when a fall is detected and the car arrives:
+Expected log for a fall → voice → resume cycle:
 
 ```text
-[fall→approach dist=42.3cm offset=-12]
-[fall→approach dist=18.1cm offset=+2]
-[fall→arrived dist=9.7cm]
-[fall→arrived dist=9.6cm]
+[app] frame=312 state=follow   line=found offset=-2   dist=inf
+[app] frame=320 state=fall     line=lost              dist=37.4cm  falling=True
 [voice] session started  room=raspbot-01-3f4a8b91  url=wss://...
 [voice] room CONNECTED (raspbot-01-3f4a8b91)
-[fall→arrived dist=9.6cm]  voice=ON
-[voice] holding (room=raspbot-01-3f4a8b91)
-[voice] holding (room=raspbot-01-3f4a8b91)
+[app] frame=340 state=voice    line=lost              dist=37.4cm  falling=True  room=raspbot-01-3f4a8b91
+[app] frame=400 state=voice    line=found offset=8    dist=37.4cm  room=raspbot-01-3f4a8b91
 ...
-[voice] session ended  room=raspbot-01-3f4a8b91     ← person stood up for 3 s
-[app] frame=... action=forward                       ← resumes line-follow
+[voice] session ended  room=raspbot-01-3f4a8b91
+[app] frame=820 state=search   line=lost              dist=inf
+[app] frame=830 state=follow   line=found offset=-1   dist=inf
 ```
 
-## E. Tuning
+## Tuning
 
 ```python
-VOICE_TRIGGER_STOP_SECONDS     = 1.0   # how long to be stopped before talking
-VOICE_END_AFTER_NO_FALL_SECONDS = 3.0  # how long after fall clears to disconnect
+VOICE_TRIGGER_STOP_SECONDS      = 1.0   # stopped-with-fall debounce before triggering
+VOICE_END_AFTER_NO_FALL_SECONDS = 15.0  # falling=False debounce before disconnect
 ```
 
-## F. Troubleshooting
+## Troubleshooting
 
-| Symptom | Fix |
-|---|---|
-| `[voice] livekit SDK not installed` | `pip install livekit` on the Pi |
-| `[voice] session start FAILED: ConnectionError` | voice API not running, wrong port, or laptop on different network |
-| `[voice] join-room FAILED: ...` | check `LIVEKIT_URL` in `capstone.voice-src/.env` — must be reachable from the Pi |
-| Agent doesn't greet (worker logs show "no participants") | Pi joined but didn't publish — that's expected in Phase 1. The worker may still greet; you just won't hear it without a speaker. |
-| Voice keeps starting then stopping | Lower `VOICE_TRIGGER_STOP_SECONDS` or raise `VOICE_END_AFTER_NO_FALL_SECONDS` |
-
-## G. Behavior with all features on (final priority order)
-
-```text
-1. Voice session active            → STAY parked (don't drive away mid-conversation)
-2. Fall detected (USB cam + YOLO)
-     • dist  > 10 cm                → APPROACH (steer to bbox)
-     • dist ≤ 10 cm  + held 1 s     → STOP & trigger voice session
-3. Standing person + dist ≤ 30 cm   → STOP & wait
-4. Line found + obstacle ≤ 15 cm    → STOP & wait
-5. Line found + clear               → PID drive
-6. Line lost                        → IR-biased sweep
-```
+| Symptom                                            | Fix                                                                |
+|----------------------------------------------------|--------------------------------------------------------------------|
+| `[voice] livekit SDK not installed`                | `pip install livekit` on the Pi                                    |
+| `[voice] session start FAILED (ConnectionError)`   | Voice API not running, wrong port, or laptop on a different network|
+| `[voice] join-room FAILED: ...`                    | Check `LIVEKIT_URL` in `capstone.voice-src/.env`                   |
+| Agent doesn't greet                                | Phase 1: no audio I/O on the Pi yet — use `listen_local.py` below  |
+| Voice keeps starting then stopping                 | Lower `VOICE_TRIGGER_STOP_SECONDS` or raise `VOICE_END_AFTER_NO_FALL_SECONDS` |
 
 ---
 
-# Step 11: Hear the voice agent through your laptop (no Pi speaker needed)
+# Test the voice agent without the car
 
-The car triggers a LiveKit session and the worker starts speaking via TTS into
-that room — but until the Pi has its own speaker, **the audio comes out of
-your laptop instead** via a separate listener process.
+Two standalone test modes exist — neither requires the Pi or motors.
 
-## How it works
+## Test mode 1 — `console` (fastest; agent only)
+
+The LiveKit Agents CLI ships a `console` subcommand that runs the agent
+locally using your laptop's mic and speakers. No LiveKit room, no FastAPI,
+no Pi — pure agent-in / agent-out. Use this to verify STT → LLM → TTS
+plumbing in isolation.
+
+```bash
+cd capstone.voice-src
+source .venv/bin/activate
+
+# .env must define GROQ_API_KEY, ELEVEN_API_KEY, ELEVEN_VOICE_ID at minimum.
+# LIVEKIT_URL / LIVEKIT_API_KEY / LIVEKIT_API_SECRET are NOT required here.
+python -m src.worker console
+```
+
+Expected:
+
+```text
+Starting Night Officer agent worker — log level: info
+Press [Ctrl+B] to toggle text/audio mode, [Q] to quit.
+```
+
+Speak into the laptop mic — the agent should reply through the speakers.
+`Ctrl+B` switches to text mode if you prefer typing.
+
+When this works, the agent itself is healthy. Any later failure during a
+full run is a LiveKit-room or networking issue, not the agent.
+
+## Test mode 2 — manual session trigger (full pipeline minus the Pi)
+
+This exercises the **exact** path the car uses, but you trigger the session
+from a `curl` instead of the Pi. Good for verifying the API, token mint,
+worker dispatch, and the laptop listener all work together before bringing
+the robot online.
+
+### Step 1 — start the three services (3 laptop terminals)
+
+```bash
+# Terminal 1 — FastAPI voice service (mints LiveKit tokens)
+cd capstone.voice-src && source .venv/bin/activate
+uvicorn src.main:app --port 8001
+
+# Terminal 2 — Agent worker (dispatches the NightOfficerAgent into rooms)
+cd capstone.voice-src && source .venv/bin/activate
+python -m src.worker dev
+
+# Terminal 3 — Listener (plays room audio through laptop speakers)
+cd capstone.voice-src && source .venv/bin/activate
+python -m src.listen_local
+```
+
+Sanity check the API:
+
+```bash
+curl http://localhost:8001/api/v1/health
+# {"status":"ok"}
+```
+
+### Step 2 — trigger a session by hand
+
+In a 4th terminal:
+
+```bash
+curl -X POST http://localhost:8001/api/v1/session/start \
+    -H "Content-Type: application/json" \
+    -d '{"robot_id": "test-rig"}'
+```
+
+Expected response:
+
+```json
+{
+  "room_name": "test-rig-3f4a8b91",
+  "token": "eyJhbGciOiJIUzI1Ni...",
+  "livekit_url": "wss://your-project.livekit.cloud"
+}
+```
+
+What should happen next, in order:
+
+- **Terminal 1** logs `Starting session ... room_name=test-rig-3f4a8b91`.
+- **Terminal 2** logs the worker accepting the dispatch and the agent
+  joining the room.
+- **Terminal 3** logs `new room discovered: test-rig-3f4a8b91`, then
+  `audio track from agent-xxx`, then your speakers play the greeting.
+
+### Step 3 — end the session
+
+The session has no Pi-side debounce here, so it stays open until you
+explicitly clean it up:
+
+```bash
+# Drop it from the active-session registry so the listener stops polling it.
+curl -X DELETE http://localhost:8001/api/v1/session/active/test-rig-3f4a8b91
+```
+
+To kill the agent worker side, just `Ctrl+C` Terminal 2.
+
+### Inspect active sessions any time
+
+```bash
+curl http://localhost:8001/api/v1/session/active
+```
+
+### Troubleshooting
+
+| Symptom                                                | Fix                                                                                       |
+|--------------------------------------------------------|-------------------------------------------------------------------------------------------|
+| `curl: (7) Failed to connect to localhost port 8001`   | Terminal 1 (`uvicorn`) isn't running                                                      |
+| API responds but listener never joins                  | Terminal 3 (`listen_local`) not running, or `.env` LIVEKIT_* values blank                 |
+| Listener joins room but no audio                       | Terminal 2 (worker) isn't running or hasn't been dispatched — check its logs              |
+| `console` mode is silent                               | `GROQ_API_KEY` / `ELEVEN_API_KEY` missing in `.env`; or default audio device isn't routed |
+| Different `room_name` each curl                        | Expected — the server auto-generates one. Pass `"room_name": "fixed-test"` in the body to override. |
+
+---
+
+# Hear the voice agent through your laptop (no Pi speaker needed)
+
+Until the Pi has a speaker wired, run the listener on your laptop — it
+subscribes to the room and plays audio through your laptop speakers.
 
 ```text
 Pi (silent participant) ─┐
                          │
 Worker (TTS publisher) ──┼─→  LiveKit Cloud room
                          │
-listen_local.py  ←───────┘    (subscribe-only, plays through laptop speakers)
-   ▲
-   │ polls every 2 s
-   ▼
-GET /api/v1/session/active  →  list of active rooms
+listen_local.py  ←───────┘    (subscribe-only, plays via laptop speakers)
 ```
 
-## Install audio prerequisites (laptop, one-time)
+Prerequisites (one-time):
 
 ```bash
 # macOS
 brew install portaudio
-
 # Linux
 sudo apt install libportaudio2
-```
 
-Then in `capstone.voice-src`:
-```bash
+cd capstone.voice-src
 source .venv/bin/activate
 pip install sounddevice
 ```
 
-(Already in `requirements.txt`, so a fresh `pip install -r requirements.txt`
-will pick it up.)
-
-## Run the listener — 4th terminal on the laptop
+Run (Terminal 4 on the laptop):
 
 ```bash
-cd ~/Desktop/workspace/capstone/capstone.voice-src
-source .venv/bin/activate
 python -m src.listen_local
 ```
 
-Expected output:
-```text
-[listen] LiveKit URL : wss://...livekit.cloud
-[listen] Voice API   : http://localhost:8001
-[listen] Polling every 2.0s for new rooms
-```
+When the car triggers a session, your laptop speakers play the Night
+Officer greeting. The listener stays alive between sessions.
 
-When the car triggers a fall session:
-```text
-[listen] new room discovered: raspbot-01-b1f32be7
-[listen] joined raspbot-01-b1f32be7
-[listen] audio track from agent-xxx in raspbot-01-b1f32be7
-[listen] output stream started 48000Hz x1ch (raspbot-01-b1f32be7)
-```
+## Full 4-terminal demo layout
 
-→ Your laptop speakers play the Night Officer greeting. 🔊
-
-When the fall clears and the Pi disconnects:
-```text
-[listen] participant left raspbot-01-b1f32be7: raspbot-01
-[listen] room disconnected: raspbot-01-b1f32be7
-[listen] room raspbot-01-b1f32be7 cleaned up
-```
-
-The listener stays alive and waits for the next session.
-
-## Full 4-terminal layout for a demo
-
-| Terminal | Where | Command |
-|---|---|---|
-| 1 | Laptop | `cd capstone-falldetection.src && python server.py --model best_falling.pt --port 8000` |
-| 2 | Laptop | `cd capstone.voice-src && python -m src.main` (voice API, port 8001) |
-| 3 | Laptop | `cd capstone.voice-src && python -m src.worker dev` |
-| 4 | **Laptop** | `cd capstone.voice-src && python -m src.listen_local`  ← NEW |
-| 5 | Pi SSH | `python -m raspbot.apps.line_follow --camera picamera2 --stream --fall-detection --voice --debug` |
-
-## Troubleshooting
-
-| Symptom | Fix |
-|---|---|
-| `sounddevice import failed` | Run `brew install portaudio` (macOS) or `apt install libportaudio2`, then `pip install sounddevice` |
-| `missing env vars: LIVEKIT_URL ...` | `.env` not in `capstone.voice-src/` root, or values are blank |
-| `poll error: ConnectionRefused` | The voice API (`python -m src.main`) isn't running |
-| Listener joins room but no audio | The worker hasn't dispatched yet — confirm Terminal 3 is running |
-| Choppy audio | Other Mac apps fighting for the audio device, or laptop is bandwidth-constrained. Lower `FALL_TARGET_FPS` on the Pi (less CPU contention) |
-| Multiple listeners running | They'll **both** join the room and **both** play audio — close one. |
-
-## When the Pi speaker arrives, do you stop using this?
-
-Up to you — both can coexist (multiple subscribers per room is fine in
-LiveKit). Once Phase 2 wires Pi audio playback, kill `listen_local.py` for
-realism, or keep it as an "operator overhear" channel.
+| # | Where  | Command                                                                                                  |
+|---|--------|----------------------------------------------------------------------------------------------------------|
+| 1 | Laptop | `cd capstone-falldetection.src && python server.py --model best_falling.pt --port 8000`                  |
+| 2 | Laptop | `cd capstone.voice-src && uvicorn src.main:app --port 8001`                                              |
+| 3 | Laptop | `cd capstone.voice-src && python -m src.worker dev`                                                      |
+| 4 | Laptop | `cd capstone.voice-src && python -m src.listen_local`                                                    |
+| 5 | Pi SSH | `python -m raspbot.apps.line_follow --camera picamera2 --stream --fall-detection --voice --debug`        |
 
 ---
 
----
-
-# Option B — Alternative: clone official Yahboom repo
-
-Use this option if you want to compare with the official Yahboom files, confirm `CarRun.py`, or test the original demo.
-
-## Step 1: Clone official repo
-
-From anywhere:
-
-```bash
-cd
-git clone https://github.com/YahboomTechnology/RaspberryPi-4WD-Car.git
-```
-
-Or use the script included here:
-
-```bash
-bash scripts/clone_yahboom_repo.sh
-```
-
-## Step 2: Check official Python folder
-
-```bash
-cd/RaspberryPi-4WD-Car/4.Code/python
-ls
-```
-
-You should see:
-
-```text
-CarRun.py
-tracking.py
-infrared_follow.py
-light_follow.py
-...
-```
-
-## Step 3: Check motor pins from official `CarRun.py`
-
-From this project folder:
-
-```bash
-cd/capstone-sensors.src
-source .venv/bin/activate
-python -m scripts.show_yahboom_pins --repo/RaspberryPi-4WD-Car
-```
-
-Expected pin values:
-
-```text
-IN1 = 20
-IN2 = 21
-IN3 = 19
-IN4 = 26
-ENA = 16
-ENB = 13
-```
-
-## Important warning about official `CarRun.py`
-
-Do **not** import official `CarRun.py` inside our app directly.
-
-Some Yahboom demo files are written as runnable demos and may move the car when executed/imported.
-
-This project already includes safe direct GPIO motor code in:
-
-```text
-raspbot/hardware/motor.py
-```
-
-So cloning the official repo is only for reference/checking, not required for running our tracker.
-
----
-
-# Option C — Alternative camera usage
-
-## Raspberry Pi Camera
-
-```bash
-python -m raspbot.apps.line_follow --camera picamera2
-```
-
-## USB camera
-
-```bash
-python -m raspbot.apps.line_follow --camera usb --camera-index 0
-```
-
-If USB index 0 does not work:
-
-```bash
-ls /dev/video*
-```
-
-Then try:
-
-```bash
-python -m scripts.camera_test --camera usb --camera-index 1
-```
-
----
-
-# Tuning guide
-
-Open config:
-
-```bash
-nano raspbot/config.py
-```
-
-Main values:
-
-```python
-WHITE_VALUE_MIN = 180
-WHITE_SATURATION_MAX = 80
-CENTER_TOLERANCE_PX = 25
-FORWARD_SPEED = 35
-TURN_SPEED = 30
-STOP_WHEN_LINE_LOST = True
-```
-
-## White line is not detected
-
-Lower this:
-
-```python
-WHITE_VALUE_MIN = 160
-```
-
-Try:
-
-```text
-150
-160
-170
-180
-```
-
-## Background is also detected as white
-
-Increase this:
-
-```python
-WHITE_VALUE_MIN = 200
-```
-
-Try:
-
-```text
-190
-200
-210
-220
-```
-
-## Bright colored objects are detected
-
-Lower saturation max:
-
-```python
-WHITE_SATURATION_MAX = 50
-```
-
-Try:
-
-```text
-40
-50
-60
-80
-```
-
-## Car shakes left/right
-
-Increase tolerance:
-
-```python
-CENTER_TOLERANCE_PX = 35
-```
-
-or lower turn speed:
-
-```python
-TURN_SPEED = 22
-```
-
-## Car is too fast
-
-Lower speed:
-
-```python
-FORWARD_SPEED = 25
-```
-
-## Line lost behavior
-
-Safer mode:
-
-```python
-STOP_WHEN_LINE_LOST = True
-```
-
-Search mode:
-
-```python
-STOP_WHEN_LINE_LOST = False
-```
-
-If search mode is enabled, the car slowly rotates when it loses the line.
-
----
-
-# Obstacle avoidance tuning
+# Tuning
 
 All knobs live in `raspbot/config.py`.
 
-## Pins (BCM numbering)
+## Line detection
 
 ```python
-ULTRASONIC_TRIG = 23   # BOARD 16
-ULTRASONIC_ECHO = 24   # BOARD 18
-IR_LEFT_PIN     = 9    # BOARD 21
-IR_RIGHT_PIN    = 10   # BOARD 19
-IR_POWER_PIN    = 25   # BOARD 22  (set None if your board has no enable pin)
+WHITE_VALUE_MIN      = 180   # lower → easier to detect; raise → less false-positives
+WHITE_SATURATION_MAX = 80    # lower → reject colored objects more aggressively
+CENTER_TOLERANCE_PX  = 25    # bigger → less wobble, but cuts corners
 ```
 
-These match the Yahboom Raspbot hardware wiring used in courses 04–06.
+White line missed → lower `WHITE_VALUE_MIN` to 160 / 150.
+Background detected as line → raise to 200 / 220.
+Colored objects detected as line → lower `WHITE_SATURATION_MAX` to 40 / 50.
 
-## Thresholds
+## Drive speed
 
 ```python
-AVOID_DISTANCE_CM   = 20.0   # closer than this → trigger avoidance
-ULTRASONIC_POLL_HZ  = 20     # background sampling rate
+FORWARD_SPEED     = 30   # straight-line speed (0–100)
+TURN_SPEED        = 45   # base speed inside steering corrections
+SEARCH_TURN_SPEED = 22   # in-place rotation speed during SEARCH / OBSTACLE
 ```
 
-Car stops too late → increase `AVOID_DISTANCE_CM` to 25–30.
-Car twitches on every wall → decrease to 12–15.
+Too fast → drop `FORWARD_SPEED` to 25. Too slow to make turns → raise
+`TURN_SPEED`.
 
-## Maneuver
+## Steering PID
 
 ```python
-AVOID_BACKUP_SEC   = 0.15
-AVOID_BACKUP_SPEED = 30
-AVOID_SPIN_SEC     = 0.45
-AVOID_SPIN_SPEED   = 35
+STEERING_PID_KP            = 0.30
+STEERING_PID_KI            = 0.0
+STEERING_PID_KD            = 0.05
+STEERING_PID_OUTPUT_LIMIT  = 35
+STEERING_PID_INTEGRAL_LIMIT= 200
 ```
 
-Spin doesn't clear the obstacle → increase `AVOID_SPIN_SEC` to 0.7–1.0.
-Car over-rotates and loses the line → decrease `AVOID_SPIN_SEC`.
+Tune in this order: KI=KD=0, raise KP until it just barely holds the line.
+Add KD to damp wobble. Add KI only if there's persistent off-center drift.
 
-## Switches
+## Obstacle threshold
 
 ```python
-AVOIDANCE_ENABLED = True
+OBSTACLE_DISTANCE_CM = 20.0   # ultrasonic ≤ this → state=OBSTACLE
 ```
 
-Set `False` to globally disable (or pass `--no-avoidance` on the CLI).
+Car stops too late → raise to 25–30. Twitches on every wall → lower to 12–15.
 
-## How it integrates
+## Sweep search
 
-`avoider.evaluate()` runs **before** the line-follow action each frame:
+```python
+SEARCH_SWEEP_SEC        = 0.4   # duration of each sweep direction
+SEARCH_INITIAL_STOP_SEC = 0.3   # brief stop on entry into SEARCH / OBSTACLE
+SEARCH_TURN_SPEED       = 22
+```
+
+Wider arc → raise `SEARCH_SWEEP_SEC` to 0.6–0.8. Too aggressive on small
+gaps → lower to 0.25.
+
+## Motor direction inverts
+
+```python
+INVERT_FORWARD  = False
+INVERT_STEERING = False
+```
+
+If forward goes back, flip `INVERT_FORWARD`. If left goes right, flip
+`INVERT_STEERING`.
+
+---
+
+# CLI reference
 
 ```text
-distance < AVOID_DISTANCE_CM  → blocked
-left IR blocked only          → spin right
-right IR blocked only         → spin left
-both IR / ultrasonic only     → spin right (default)
-```
+python -m raspbot.apps.line_follow [options]
 
-When blocked, the avoider runs a small maneuver (~0.6 s total) and the next
-frame resumes line-following. The camera is not read during the maneuver —
-that's intentional.
+Options:
+  --camera {picamera2,usb}        Camera backend (default: picamera2)
+  --camera-index N                USB camera index (default: 0)
+  --debug                         Verbose per-frame state logging
+  --dry-run                       Print motor commands; wheels don't move
+  --no-sensors                    Skip ultrasonic + IR init (sensors not wired)
+
+  --stream                        Serve MJPEG dashboard
+  --stream-port PORT              (default: 8080)
+  --stream-fps N                  Cap stream FPS (control loop unaffected)
+
+  --fall-detection                Enable remote YOLO fall detection
+  --fall-server URL               (default: config.FALL_SERVER_URL)
+  --fall-camera-index N           (default: config.FALL_USB_CAMERA_INDEX)
+
+  --voice                         Trigger LiveKit voice agent on fall
+  --voice-api URL                 (default: config.VOICE_API_URL)
+  --voice-robot-id ID             (default: config.VOICE_ROBOT_ID)
+```
 
 ---
 
 # Recommended first run order
 
-Run in this exact order:
+Do not run the real car before camera, vision, sensor, and motor tests pass.
 
 ```bash
-cd/capstone-sensors.src
+cd capstone-sensors.src
 source .venv/bin/activate
 
 python -m scripts.camera_test --camera picamera2
@@ -1054,8 +774,7 @@ python -m scripts.avoid_test
 python -m scripts.motor_test
 python -m raspbot.apps.line_follow --camera picamera2 --dry-run --debug
 python -m raspbot.apps.line_follow --camera picamera2
-python -m raspbot.apps.line_follow --camera picamera2 --stream   # view from laptop
+python -m raspbot.apps.line_follow --camera picamera2 --stream
 python -m raspbot.apps.line_follow --camera picamera2 --stream --fall-detection
+python -m raspbot.apps.line_follow --camera picamera2 --stream --fall-detection --voice
 ```
-
-Do not run the real car before camera, vision, sensor, and motor tests pass.
