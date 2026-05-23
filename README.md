@@ -662,6 +662,108 @@ VOICE_END_AFTER_NO_FALL_SECONDS = 3.0  # how long after fall clears to disconnec
 
 ---
 
+# Step 11: Hear the voice agent through your laptop (no Pi speaker needed)
+
+The car triggers a LiveKit session and the worker starts speaking via TTS into
+that room — but until the Pi has its own speaker, **the audio comes out of
+your laptop instead** via a separate listener process.
+
+## How it works
+
+```text
+Pi (silent participant) ─┐
+                         │
+Worker (TTS publisher) ──┼─→  LiveKit Cloud room
+                         │
+listen_local.py  ←───────┘    (subscribe-only, plays through laptop speakers)
+   ▲
+   │ polls every 2 s
+   ▼
+GET /api/v1/session/active  →  list of active rooms
+```
+
+## Install audio prerequisites (laptop, one-time)
+
+```bash
+# macOS
+brew install portaudio
+
+# Linux
+sudo apt install libportaudio2
+```
+
+Then in `capstone.voice-src`:
+```bash
+source .venv/bin/activate
+pip install sounddevice
+```
+
+(Already in `requirements.txt`, so a fresh `pip install -r requirements.txt`
+will pick it up.)
+
+## Run the listener — 4th terminal on the laptop
+
+```bash
+cd ~/Desktop/workspace/capstone/capstone.voice-src
+source .venv/bin/activate
+python -m src.listen_local
+```
+
+Expected output:
+```text
+[listen] LiveKit URL : wss://...livekit.cloud
+[listen] Voice API   : http://localhost:8001
+[listen] Polling every 2.0s for new rooms
+```
+
+When the car triggers a fall session:
+```text
+[listen] new room discovered: raspbot-01-b1f32be7
+[listen] joined raspbot-01-b1f32be7
+[listen] audio track from agent-xxx in raspbot-01-b1f32be7
+[listen] output stream started 48000Hz x1ch (raspbot-01-b1f32be7)
+```
+
+→ Your laptop speakers play the Night Officer greeting. 🔊
+
+When the fall clears and the Pi disconnects:
+```text
+[listen] participant left raspbot-01-b1f32be7: raspbot-01
+[listen] room disconnected: raspbot-01-b1f32be7
+[listen] room raspbot-01-b1f32be7 cleaned up
+```
+
+The listener stays alive and waits for the next session.
+
+## Full 4-terminal layout for a demo
+
+| Terminal | Where | Command |
+|---|---|---|
+| 1 | Laptop | `cd capstone-falldetection.src && python server.py --model best_falling.pt --port 8000` |
+| 2 | Laptop | `cd capstone.voice-src && python -m src.main` (voice API, port 8001) |
+| 3 | Laptop | `cd capstone.voice-src && python -m src.worker dev` |
+| 4 | **Laptop** | `cd capstone.voice-src && python -m src.listen_local`  ← NEW |
+| 5 | Pi SSH | `python -m raspbot.apps.line_follow --camera picamera2 --stream --fall-detection --voice --debug` |
+
+## Troubleshooting
+
+| Symptom | Fix |
+|---|---|
+| `sounddevice import failed` | Run `brew install portaudio` (macOS) or `apt install libportaudio2`, then `pip install sounddevice` |
+| `missing env vars: LIVEKIT_URL ...` | `.env` not in `capstone.voice-src/` root, or values are blank |
+| `poll error: ConnectionRefused` | The voice API (`python -m src.main`) isn't running |
+| Listener joins room but no audio | The worker hasn't dispatched yet — confirm Terminal 3 is running |
+| Choppy audio | Other Mac apps fighting for the audio device, or laptop is bandwidth-constrained. Lower `FALL_TARGET_FPS` on the Pi (less CPU contention) |
+| Multiple listeners running | They'll **both** join the room and **both** play audio — close one. |
+
+## When the Pi speaker arrives, do you stop using this?
+
+Up to you — both can coexist (multiple subscribers per room is fine in
+LiveKit). Once Phase 2 wires Pi audio playback, kill `listen_local.py` for
+realism, or keep it as an "operator overhear" channel.
+
+---
+
 ---
 
 # Option B — Alternative: clone official Yahboom repo

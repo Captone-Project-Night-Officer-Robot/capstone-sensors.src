@@ -95,24 +95,30 @@ class VoiceAgentClient:
 
         Starts a session when `falling AND arrived` is held continuously
         for `trigger_stop_seconds`. Ends a session when `falling` has been
-        False for `end_after_no_fall_seconds`.
+        False for `end_after_no_fall_seconds`. `_last_fall_at` is refreshed
+        every time we see falling=True (including while still approaching)
+        so brief YOLO flickers don't tear down an active session.
         """
         now = time.time()
 
-        if falling and arrived:
-            if self._first_arrived_at is None:
-                self._first_arrived_at = now
+        if falling:
             self._last_fall_at = now
-            if (
-                not self.is_active()
-                and now - self._first_arrived_at >= self.trigger_stop_seconds
-            ):
-                self._start_session()
+            if arrived:
+                if self._first_arrived_at is None:
+                    self._first_arrived_at = now
+                if (
+                    not self.is_active()
+                    and now - self._first_arrived_at >= self.trigger_stop_seconds
+                ):
+                    self._start_session()
+            else:
+                # Still moving toward the person — reset the "arrived" timer
+                # so the trigger debounce only counts time spent stopped.
+                self._first_arrived_at = None
         else:
             self._first_arrived_at = None
             if (
-                not falling
-                and self.is_active()
+                self.is_active()
                 and self._last_fall_at is not None
                 and now - self._last_fall_at >= self.end_after_no_fall_seconds
             ):

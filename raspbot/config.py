@@ -244,7 +244,10 @@ VOICE_ROBOT_ID = "raspbot-01"
 VOICE_TRIGGER_STOP_SECONDS = 1.0
 
 # End the session when no fall has been detected for this long.
-VOICE_END_AFTER_NO_FALL_SECONDS = 3.0
+# 15 s is a sensible default — long enough that YOLO flickers don't drop the
+# session, short enough that the agent doesn't talk to thin air forever.
+# For a real triage scenario, 30–60 s is reasonable.
+VOICE_END_AFTER_NO_FALL_SECONDS = 15.0
 
 # HTTP timeout for the session-start call.
 VOICE_API_TIMEOUT_SEC = 5.0
