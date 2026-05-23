@@ -180,10 +180,14 @@ def main() -> None:
 
     finally:
         # Phase 3: tick falling=False until the client ends the session.
-        deadline = time.time() + max(args.end_debounce, 1.0) + 5.0
-        while client.is_active() and time.time() < deadline:
-            client.tick(falling=False, arrived=False)
-            time.sleep(TICK_PERIOD_SEC)
+        # Tolerate a second Ctrl+C here — drop straight to shutdown.
+        try:
+            deadline = time.time() + max(args.end_debounce, 1.0) + 5.0
+            while client.is_active() and time.time() < deadline:
+                client.tick(falling=False, arrived=False)
+                time.sleep(TICK_PERIOD_SEC)
+        except KeyboardInterrupt:
+            print("[voice-test] second Ctrl+C — forcing shutdown.")
 
         client.shutdown()
 
