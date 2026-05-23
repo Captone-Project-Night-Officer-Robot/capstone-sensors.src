@@ -692,6 +692,97 @@ curl http://localhost:8001/api/v1/session/active
 | `console` mode is silent                               | `GROQ_API_KEY` / `ELEVEN_API_KEY` missing in `.env`; or default audio device isn't routed |
 | Different `room_name` each curl                        | Expected — the server auto-generates one. Pass `"room_name": "fixed-test"` in the body to override. |
 
+## Test mode 3 — make the **robot** speak without moving (Pi-side)
+
+Use this once the Pi has mic + speaker wired and you've finished
+[section C](#c-install-livekit--audio-io-on-the-pi-one-time) of the Voice
+Agent setup. It boots a real LiveKit session **on the Pi** — Pi mic
+publishes to the room, Pi speaker plays the agent — but skips the camera,
+YOLO, motors, and state machine entirely. Use it to verify Pi audio I/O
+without rigging up a fake fall.
+
+### Prereqs
+
+- Laptop is running `uvicorn src.main:app --port 8001` (Terminal 1) and
+  `python -m src.worker dev` (Terminal 2). The listener (`listen_local`)
+  is optional.
+- Pi has `libportaudio2`, `livekit`, `sounddevice` installed.
+- `raspbot/config.py` has `VOICE_API_URL` pointing at the laptop, plus
+  `VOICE_MIC_DEVICE` / `VOICE_SPEAKER_DEVICE` set (see section D).
+
+### Run
+
+```bash
+# On the Pi:
+source .venv/bin/activate
+
+# 30-second session against the URL in raspbot/config.py:
+python -m scripts.voice_test
+
+# Override the API endpoint / robot id on the CLI:
+python -m scripts.voice_test --api-url http://192.168.1.55:8001 --robot-id rig-1
+
+# Speaker-only — don't publish the mic (one-way TTS test):
+python -m scripts.voice_test --no-mic
+
+# Hold the session indefinitely (Ctrl+C to end):
+python -m scripts.voice_test --duration 0
+```
+
+### Expected output
+
+```text
+================================================================
+[voice-test] Pi voice-session standalone test
+================================================================
+  voice API           : http://192.168.1.55:8001
+  robot_id            : raspbot-01
+  hold duration       : 30.0s
+  mic publish         : ON
+  livekit installed   : True
+  sounddevice present : True
+  mic device          : USB PnP Sound Device
+  speaker device      : USB Speaker
+  mic sample rate     : 48000 Hz
+----------------------------------------------------------------
+[voice-test] triggering session (falling=True)...
+[voice] session started  room=raspbot-01-3f4a8b91  url=wss://...
+[voice] room CONNECTED (raspbot-01-3f4a8b91)
+[voice] mic published  rate=48000Hz  ch=1
+[voice] mic capture started device=USB PnP Sound Device block=20ms
+[voice] subscribed audio track from agent-xxx
+[voice] speaker started 24000Hz x1ch device=USB Speaker
+[voice-test] session active. room=raspbot-01-3f4a8b91
+[voice-test] Speak into the mic — the agent should reply through the speaker.
+             Ctrl+C to end early.
+[voice-test] duration reached (30.0s). winding down...
+[voice] session ended  room=raspbot-01-3f4a8b91
+[voice] room disconnected
+[voice-test] done.
+```
+
+### CLI options
+
+```text
+--api-url URL          Voice API endpoint (default: config.VOICE_API_URL)
+--robot-id ID          Reported to the voice API (default: config.VOICE_ROBOT_ID)
+--duration SEC         Seconds to hold the session. 0 = until Ctrl+C. (default: 30)
+--no-mic               Don't publish the Pi mic (one-way TTS smoke test)
+--trigger-debounce SEC Override VOICE_TRIGGER_STOP_SECONDS (default: 0, instant)
+--end-debounce SEC     Override VOICE_END_AFTER_NO_FALL_SECONDS (default: 2s)
+```
+
+### Troubleshooting
+
+| Symptom                                          | Fix                                                                                  |
+|--------------------------------------------------|--------------------------------------------------------------------------------------|
+| `FAILED: session did not become active within 10s` | Voice API not reachable. `curl http://<laptop>:8001/api/v1/health` from the Pi      |
+| `[voice] livekit SDK not installed`              | `pip install livekit` on the Pi                                                      |
+| `[voice] sounddevice not available`              | `sudo apt install libportaudio2 && pip install sounddevice`                          |
+| Session starts but Pi is silent                  | Wrong `VOICE_SPEAKER_DEVICE`; or output muted in `alsamixer`                         |
+| Session starts but agent never responds          | Mic isn't being published. Check `[voice] mic published` line appears. Verify `--no-mic` is **not** passed |
+| Choppy / robotic audio                           | Wifi too weak; or sample-rate mismatch — try `VOICE_MIC_SAMPLE_RATE = 16000`         |
+
 ---
 
 # Hear the voice agent through your laptop (optional — operator overhear)
