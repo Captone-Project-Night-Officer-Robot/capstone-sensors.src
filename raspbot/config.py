@@ -225,10 +225,15 @@ VOICE_RETRY_COOLDOWN_SEC = 5.0
 VOICE_MIC_ENABLED = True
 
 # sounddevice device identifiers. None = system default. Use either an int
-# index (see `python -m sounddevice` to list devices) or the substring of a
-# device name, e.g. "USB PnP Sound Device".
-VOICE_MIC_DEVICE: int | str | None = None
-VOICE_SPEAKER_DEVICE: int | str | None = None
+# index (see `python -m sounddevice` to list devices) or a substring of a
+# device name. Names are more robust than indices since indices can shift
+# across reboots when USB devices reenumerate.
+#
+# Defaults match this car's wiring:
+#   "USB PnP"    → USB PnP Sound Device (mic, 1 in / 0 out)
+#   "UACDemoV1"  → UACDemoV1.0          (speaker, 0 in / 2 out)
+VOICE_MIC_DEVICE: int | str | None = "USB PnP"
+VOICE_SPEAKER_DEVICE: int | str | None = "UACDemoV1"
 
 # Mic sample rate (Hz). 48000 is the LiveKit standard. 16000 works too and
 # saves bandwidth — pick whichever your USB mic supports natively to avoid
