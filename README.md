@@ -405,13 +405,6 @@ YOLO reports falling=False for VOICE_END_AFTER_NO_FALL_SECONDS
 Pi leaves the room. State falls through to SEARCH → FOLLOW.
 ```
 
-## Phase 1 vs Phase 2
-
-| Phase                    | What works                                              | What's needed                                          |
-|--------------------------|---------------------------------------------------------|--------------------------------------------------------|
-| **Phase 1 (now)**        | Token mint + LiveKit room connection + worker dispatch  | `pip install livekit` on the Pi. No audio I/O yet.     |
-| **Phase 2 (mic+speaker)**| Live two-way voice conversation                         | Add `sounddevice` + AudioSource (mic) + frame routing  |
-
 ## A. Run the voice server on the laptop
 
 ```bash
@@ -439,17 +432,71 @@ VOICE_API_URL = "http://192.168.1.55:8001"
 VOICE_ROBOT_ID = "raspbot-01"
 ```
 
-## C. Install LiveKit on the Pi (one-time)
+## C. Install LiveKit + audio I/O on the Pi (one-time)
+
+The Pi needs three things to talk and listen in a LiveKit room:
+
+```bash
+# 1. PortAudio (system lib that sounddevice binds to)
+sudo apt install -y libportaudio2
+
+# 2. Python packages (inside the venv)
+source .venv/bin/activate
+pip install livekit sounddevice
+```
+
+If `livekit` is missing, the session is logged but the Pi never joins the
+room. If `sounddevice` is missing, the Pi joins silently — neither side
+hears anything.
+
+## D. Pick the mic and speaker
+
+Plug your USB mic and speaker into the Pi, then list audio devices:
 
 ```bash
 source .venv/bin/activate
-pip install livekit
+python -m sounddevice
 ```
 
-Without this, the session is logged but the Pi never joins the room, so the
-worker isn't dispatched.
+Expected (your indices will differ):
 
-## D. Run with everything on
+```text
+   0 bcm2835 Headphones, ALSA (0 in, 8 out)
+   1 USB PnP Sound Device, USB Audio (1 in, 0 out)
+   2 USB Speaker, USB Audio (0 in, 2 out)
+*  3 default, ALSA (1 in, 2 out)
+```
+
+Set the chosen devices in `raspbot/config.py`. You can use an integer
+index or a substring of the device name (substring is more robust across
+reboots since indices can shift):
+
+```python
+VOICE_MIC_DEVICE     = "USB PnP Sound Device"   # or 1
+VOICE_SPEAKER_DEVICE = "USB Speaker"            # or 2
+```
+
+Leave them as `None` to use the system default.
+
+Quick standalone audio smoke test (no LiveKit):
+
+```bash
+python -c "
+import sounddevice as sd, numpy as np
+fs=48000; sec=1.5
+print('Recording 1.5s from default mic...')
+rec = sd.rec(int(sec*fs), samplerate=fs, channels=1, dtype='int16'); sd.wait()
+print('Playing back through default speaker...')
+sd.play(rec, fs); sd.wait()
+print('OK')
+"
+```
+
+If you hear yourself, both devices work. If not, fix
+`VOICE_MIC_DEVICE` / `VOICE_SPEAKER_DEVICE` or check
+`alsamixer` for muted channels.
+
+## E. Run with everything on
 
 ```bash
 python -m raspbot.apps.line_follow \
@@ -467,30 +514,62 @@ Expected log for a fall → voice → resume cycle:
 [app] frame=320 state=fall     line=lost              dist=37.4cm  falling=True
 [voice] session started  room=raspbot-01-3f4a8b91  url=wss://...
 [voice] room CONNECTED (raspbot-01-3f4a8b91)
+[voice] mic published  rate=48000Hz  ch=1
+[voice] mic capture started device=USB PnP Sound Device block=20ms
+[voice] subscribed audio track from agent-xxx
+[voice] speaker started 24000Hz x1ch device=USB Speaker
 [app] frame=340 state=voice    line=lost              dist=37.4cm  falling=True  room=raspbot-01-3f4a8b91
-[app] frame=400 state=voice    line=found offset=8    dist=37.4cm  room=raspbot-01-3f4a8b91
 ...
 [voice] session ended  room=raspbot-01-3f4a8b91
+[voice] room disconnected
 [app] frame=820 state=search   line=lost              dist=inf
 [app] frame=830 state=follow   line=found offset=-1   dist=inf
 ```
 
+The agent now hears the fallen person through the Pi mic and speaks back
+through the Pi speaker. No `listen_local.py` needed.
+
 ## Tuning
 
 ```python
-VOICE_TRIGGER_STOP_SECONDS      = 1.0   # stopped-with-fall debounce before triggering
-VOICE_END_AFTER_NO_FALL_SECONDS = 15.0  # falling=False debounce before disconnect
+VOICE_TRIGGER_STOP_SECONDS      = 1.0    # stopped-with-fall debounce before triggering
+VOICE_END_AFTER_NO_FALL_SECONDS = 15.0   # falling=False debounce before disconnect
+
+VOICE_MIC_ENABLED       = True            # publish Pi mic → agent hears
+VOICE_MIC_DEVICE        = None            # int index OR name substring
+VOICE_SPEAKER_DEVICE    = None            # int index OR name substring
+VOICE_MIC_SAMPLE_RATE   = 48000           # 16000 also fine; match your mic
+VOICE_MIC_BLOCK_MS      = 20              # WebRTC-standard frame size
+VOICE_MIC_QUEUE_MAX     = 25              # ~500ms backpressure headroom
 ```
+
+## Speaker-only mode
+
+If the Pi has a speaker but no mic (or the mic is broken), set:
+
+```python
+VOICE_MIC_ENABLED = False
+```
+
+The Pi will still hear the agent and play TTS through the speaker; the
+agent just won't get audio back. Useful for one-way reassurance ("help is
+on the way — please stay still") without two-way conversation.
 
 ## Troubleshooting
 
-| Symptom                                            | Fix                                                                |
-|----------------------------------------------------|--------------------------------------------------------------------|
-| `[voice] livekit SDK not installed`                | `pip install livekit` on the Pi                                    |
-| `[voice] session start FAILED (ConnectionError)`   | Voice API not running, wrong port, or laptop on a different network|
-| `[voice] join-room FAILED: ...`                    | Check `LIVEKIT_URL` in `capstone.voice-src/.env`                   |
-| Agent doesn't greet                                | Phase 1: no audio I/O on the Pi yet — use `listen_local.py` below  |
-| Voice keeps starting then stopping                 | Lower `VOICE_TRIGGER_STOP_SECONDS` or raise `VOICE_END_AFTER_NO_FALL_SECONDS` |
+| Symptom                                              | Fix                                                                              |
+|------------------------------------------------------|----------------------------------------------------------------------------------|
+| `[voice] livekit SDK not installed`                  | `pip install livekit` on the Pi                                                  |
+| `[voice] sounddevice not available — ...`            | `sudo apt install libportaudio2` then `pip install sounddevice`                  |
+| `[voice] session start FAILED (ConnectionError)`     | Voice API not running, wrong port, or laptop on a different network              |
+| `[voice] join-room FAILED: ...`                      | Check `LIVEKIT_URL` in `capstone.voice-src/.env`                                 |
+| `[voice] mic InputStream FAILED: ...`                | Wrong `VOICE_MIC_DEVICE`. Run `python -m sounddevice` and pick the right one     |
+| `[voice] speaker open FAILED: ...`                   | Wrong `VOICE_SPEAKER_DEVICE`, or another process is holding the device           |
+| Pi plays nothing through speaker                     | Output muted in `alsamixer`; or HDMI/analog routing wrong → `sudo raspi-config` audio menu |
+| Agent doesn't react to what the person says          | Check the worker logs — does it report STT transcripts? If not, mic isn't reaching the room. Test mic with `arecord -d 3 t.wav && aplay t.wav` |
+| Audio is choppy / robotic                            | Lower `VOICE_MIC_SAMPLE_RATE` to 16000, OR raise `VOICE_MIC_BLOCK_MS` to 40      |
+| Voice keeps starting then stopping                   | Lower `VOICE_TRIGGER_STOP_SECONDS` or raise `VOICE_END_AFTER_NO_FALL_SECONDS`    |
+| Echo / agent hears its own TTS                       | Position speaker away from mic; or set `VOICE_MIC_ENABLED=False` while testing   |
 
 ---
 
@@ -615,10 +694,21 @@ curl http://localhost:8001/api/v1/session/active
 
 ---
 
-# Hear the voice agent through your laptop (no Pi speaker needed)
+# Hear the voice agent through your laptop (optional — operator overhear)
 
-Until the Pi has a speaker wired, run the listener on your laptop — it
-subscribes to the room and plays audio through your laptop speakers.
+The Pi now plays the agent's TTS through its own speaker (see the Voice
+Agent section above), so this listener is **optional**. Keep it if you
+want an "operator overhear" channel — your laptop joins the same room as
+a second subscriber and plays a copy of the conversation through your
+laptop speakers. Useful for demos, debugging, or remote monitoring.
+
+```text
+Pi  (mic + speaker, full participant)  ─┐
+                                        │
+Worker (TTS publisher) ─────────────────┼─→  LiveKit Cloud room
+                                        │
+listen_local.py  ←──────────────────────┘    (subscribe-only, laptop speakers)
+```
 
 ```text
 Pi (silent participant) ─┐
@@ -650,15 +740,22 @@ python -m src.listen_local
 When the car triggers a session, your laptop speakers play the Night
 Officer greeting. The listener stays alive between sessions.
 
-## Full 4-terminal demo layout
+## Full demo layout
+
+Minimum (Pi has mic + speaker — audio plays on the car):
 
 | # | Where  | Command                                                                                                  |
 |---|--------|----------------------------------------------------------------------------------------------------------|
 | 1 | Laptop | `cd capstone-falldetection.src && python server.py --model best_falling.pt --port 8000`                  |
 | 2 | Laptop | `cd capstone.voice-src && uvicorn src.main:app --port 8001`                                              |
 | 3 | Laptop | `cd capstone.voice-src && python -m src.worker dev`                                                      |
-| 4 | Laptop | `cd capstone.voice-src && python -m src.listen_local`                                                    |
-| 5 | Pi SSH | `python -m raspbot.apps.line_follow --camera picamera2 --stream --fall-detection --voice --debug`        |
+| 4 | Pi SSH | `python -m raspbot.apps.line_follow --camera picamera2 --stream --fall-detection --voice --debug`        |
+
+Add this for operator overhear on the laptop (optional):
+
+| # | Where  | Command                                                            |
+|---|--------|--------------------------------------------------------------------|
+| 5 | Laptop | `cd capstone.voice-src && python -m src.listen_local`              |
 
 ---
 

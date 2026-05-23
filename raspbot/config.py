@@ -211,3 +211,35 @@ VOICE_API_TIMEOUT_SEC = 5.0
 # After a failed session-start (server down, wrong URL, etc.) wait this long
 # before retrying. Prevents the log from filling up.
 VOICE_RETRY_COOLDOWN_SEC = 5.0
+
+
+# -----------------------------
+# Voice-agent audio I/O (Pi mic + speaker)
+# Phase 2: the Pi joins the LiveKit room with a real mic track and plays
+# the agent's TTS through a real speaker. Requires sounddevice + portaudio.
+# -----------------------------
+
+# Capture mic audio and publish it to the room so the agent can hear the
+# fallen person. Set False to keep the Pi as a silent participant
+# (speaker-only mode).
+VOICE_MIC_ENABLED = True
+
+# sounddevice device identifiers. None = system default. Use either an int
+# index (see `python -m sounddevice` to list devices) or the substring of a
+# device name, e.g. "USB PnP Sound Device".
+VOICE_MIC_DEVICE: int | str | None = None
+VOICE_SPEAKER_DEVICE: int | str | None = None
+
+# Mic sample rate (Hz). 48000 is the LiveKit standard. 16000 works too and
+# saves bandwidth — pick whichever your USB mic supports natively to avoid
+# resampling on the Pi.
+VOICE_MIC_SAMPLE_RATE = 48000
+
+# Mic capture block size in milliseconds. 20 ms = standard WebRTC frame.
+# Smaller = lower latency but more CPU; larger = more jitter resilience.
+VOICE_MIC_BLOCK_MS = 20
+
+# Maximum number of mic chunks buffered between PortAudio and the LiveKit
+# capture task. ~20 × 20ms = 400ms of headroom. When full, the oldest
+# behavior is to drop new chunks (PortAudio keeps running).
+VOICE_MIC_QUEUE_MAX = 25

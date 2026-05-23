@@ -1,35 +1,37 @@
 """
 Voice-agent integration client.
 
-Triggers a LiveKit voice session on the capstone.voice-src server when a fall
-is detected AND the car has come to a stop next to the fallen person. The
-voice worker (already running on the laptop) is then dispatched to that room
-and starts the NightOfficerAgent.
+Triggers a LiveKit voice session on the capstone.voice-src server when a
+fall is detected AND the car has stopped next to the fallen person. The
+voice worker (already running on the laptop) is then dispatched into that
+room and starts the NightOfficerAgent.
 
-Phase 1 (this file):
+Phase 2 (this file):
     • Sync POST /api/v1/session/start to mint a token.
-    • Optionally join the returned LiveKit room as a SILENT participant
-      (no mic publish, no speaker subscribe yet) so the worker is actually
-      dispatched. This still requires `pip install livekit`.
-    • If the `livekit` package isn't installed, the trigger logs the session
-      details and exits gracefully — the worker won't be dispatched without
-      a participant, but the API plumbing is verified.
+    • Join the returned LiveKit room from the Pi.
+    • PUBLISH the Pi's mic as a LiveKit audio track (the agent's STT
+      receives it and runs Silero VAD + ElevenLabs STT).
+    • SUBSCRIBE to the agent's TTS track and play it through the Pi's
+      speaker (sounddevice.OutputStream, sample rate auto-detected per
+      incoming frame — exactly the pattern listen_local.py uses).
 
-Phase 2 (later, when mic + speaker are plugged in):
-    • Add `sounddevice`-based mic capture, feed into livekit AudioSource.
-    • Subscribe to the incoming TTS track, route frames to the speaker.
-    • See _async_join_room for the TODO locations.
+If `livekit` or `sounddevice` is missing on the Pi, the trigger still
+fires and logs the session, but the corresponding side (room join or
+audio I/O) is skipped gracefully so the line-follower keeps running.
 """
 
 from __future__ import annotations
 
 import asyncio
+import queue
 import threading
 import time
 from dataclasses import dataclass
 from typing import Optional
 
 import requests
+
+import raspbot.config as cfg
 
 
 try:
@@ -38,6 +40,20 @@ try:
 except Exception:
     _lk_rtc = None  # type: ignore
     _HAS_LIVEKIT = False
+
+try:
+    import numpy as _np  # type: ignore
+    _HAS_NUMPY = True
+except Exception:
+    _np = None  # type: ignore
+    _HAS_NUMPY = False
+
+try:
+    import sounddevice as _sd  # type: ignore
+    _HAS_SOUNDDEVICE = True
+except Exception:
+    _sd = None  # type: ignore
+    _HAS_SOUNDDEVICE = False
 
 
 @dataclass
@@ -80,6 +96,18 @@ class VoiceAgentClient:
         self._loop_thread: Optional[threading.Thread] = None
         self._room = None  # livekit.rtc.Room when active
 
+        # Audio I/O (Phase 2)
+        self._audio_source = None              # rtc.AudioSource (mic)
+        self._mic_stream = None                # sounddevice.InputStream
+        self._mic_queue: "queue.Queue[bytes]" = queue.Queue(
+            maxsize=cfg.VOICE_MIC_QUEUE_MAX
+        )
+        self._mic_pump_task: Optional[asyncio.Task] = None
+        self._spk_stream = None                # sounddevice.OutputStream (lazy)
+        self._spk_stream_lock = threading.Lock()
+        self._spk_tasks: list[asyncio.Task] = []
+        self._audio_warned_no_sd = False
+
     # ─── public API ───────────────────────────────────────────────
 
     def is_active(self) -> bool:
@@ -95,9 +123,9 @@ class VoiceAgentClient:
 
         Starts a session when `falling AND arrived` is held continuously
         for `trigger_stop_seconds`. Ends a session when `falling` has been
-        False for `end_after_no_fall_seconds`. `_last_fall_at` is refreshed
-        every time we see falling=True (including while still approaching)
-        so brief YOLO flickers don't tear down an active session.
+        False for `end_after_no_fall_seconds`. `_last_fall_at` refreshes
+        every time we see falling=True so brief YOLO flickers don't tear
+        down an active session.
         """
         now = time.time()
 
@@ -112,8 +140,6 @@ class VoiceAgentClient:
                 ):
                     self._start_session()
             else:
-                # Still moving toward the person — reset the "arrived" timer
-                # so the trigger debounce only counts time spent stopped.
                 self._first_arrived_at = None
         else:
             self._first_arrived_at = None
@@ -137,7 +163,6 @@ class VoiceAgentClient:
     def _start_session(self) -> bool:
         now = time.time()
 
-        # Respect retry cooldown after a previous failure.
         if (
             self._last_failed_attempt_at is not None
             and now - self._last_failed_attempt_at < self.retry_cooldown_seconds
@@ -175,11 +200,10 @@ class VoiceAgentClient:
             else:
                 print(
                     "[voice] livekit SDK not installed on the Pi — "
-                    "Phase 1 stops here. Install with: pip install livekit"
+                    "session logged but no audio. Install: pip install livekit"
                 )
             return True
         except Exception as exc:
-            # Keep the message short; full repr was filling the log.
             short = type(exc).__name__
             print(
                 f"[voice] session start FAILED ({short}). "
@@ -236,27 +260,39 @@ class VoiceAgentClient:
 
             @self._room.on("track_subscribed")
             def _on_subscribed(track, publication, participant) -> None:
-                print(
-                    f"[voice] subscribed track kind={track.kind} "
-                    f"from {participant.identity}"
-                )
-                # Phase 2 TODO: if track.kind == audio, route frames to speaker.
+                if track.kind == _lk_rtc.TrackKind.KIND_AUDIO:
+                    print(
+                        f"[voice] subscribed audio track from "
+                        f"{participant.identity}"
+                    )
+                    task = asyncio.create_task(self._consume_audio(track))
+                    self._spk_tasks.append(task)
 
             @self._room.on("disconnected")
             def _on_disconnected(*_a) -> None:
                 print("[voice] room disconnected")
 
             await self._room.connect(session.livekit_url, session.token)
-            # Phase 2 TODO:
-            #   source = _lk_rtc.AudioSource(sample_rate=48000, num_channels=1)
-            #   track  = _lk_rtc.LocalAudioTrack.create_audio_track("mic", source)
-            #   await self._room.local_participant.publish_track(track, ...)
-            #   feed source.capture_frame(...) from a sounddevice InputStream.
+
+            if cfg.VOICE_MIC_ENABLED:
+                await self._publish_mic()
+
         except Exception as exc:
             print(f"[voice] join-room FAILED: {exc}")
             self._room = None
 
     async def _async_leave_room(self) -> None:
+        # Stop mic capture before disconnecting so we don't keep capturing
+        # into a dead AudioSource.
+        await self._stop_mic()
+
+        # Cancel any in-flight playback consumers.
+        for task in self._spk_tasks:
+            if not task.done():
+                task.cancel()
+        self._spk_tasks.clear()
+        self._stop_speaker()
+
         if self._room is None:
             return
         try:
@@ -265,3 +301,208 @@ class VoiceAgentClient:
             print(f"[voice] leave-room error: {exc}")
         finally:
             self._room = None
+
+    # ─── mic (publish) ────────────────────────────────────────────
+
+    async def _publish_mic(self) -> None:
+        if not _HAS_SOUNDDEVICE or _sd is None:
+            if not self._audio_warned_no_sd:
+                print(
+                    "[voice] sounddevice not available — mic publish disabled. "
+                    "Install: pip install sounddevice (+ portaudio system pkg)"
+                )
+                self._audio_warned_no_sd = True
+            return
+        if _lk_rtc is None:
+            return
+
+        sample_rate = cfg.VOICE_MIC_SAMPLE_RATE
+        try:
+            self._audio_source = _lk_rtc.AudioSource(
+                sample_rate=sample_rate, num_channels=1
+            )
+            track = _lk_rtc.LocalAudioTrack.create_audio_track(
+                "pi-mic", self._audio_source
+            )
+            options = _lk_rtc.TrackPublishOptions(
+                source=_lk_rtc.TrackSource.SOURCE_MICROPHONE
+            )
+            await self._room.local_participant.publish_track(track, options)
+            print(f"[voice] mic published  rate={sample_rate}Hz  ch=1")
+        except Exception as exc:
+            print(f"[voice] mic publish FAILED: {exc}")
+            self._audio_source = None
+            return
+
+        # Drain any stale chunks left from a previous session.
+        while not self._mic_queue.empty():
+            try:
+                self._mic_queue.get_nowait()
+            except queue.Empty:
+                break
+
+        loop = asyncio.get_running_loop()
+        block_frames = max(1, int(sample_rate * cfg.VOICE_MIC_BLOCK_MS / 1000))
+
+        def _mic_callback(indata, frames, time_info, status):  # PortAudio thread
+            if status:
+                # Underrun/overflow flags. Log sparingly — they happen.
+                pass
+            try:
+                # Force int16 mono → bytes
+                pcm = indata[:, 0].tobytes() if indata.ndim > 1 else indata.tobytes()
+                self._mic_queue.put_nowait(pcm)
+            except queue.Full:
+                # Backpressure: drop the chunk. Better than blocking PortAudio.
+                pass
+            except Exception:
+                pass
+
+        try:
+            self._mic_stream = _sd.InputStream(
+                samplerate=sample_rate,
+                channels=1,
+                dtype="int16",
+                blocksize=block_frames,
+                callback=_mic_callback,
+                device=cfg.VOICE_MIC_DEVICE,
+            )
+            self._mic_stream.start()
+            print(
+                f"[voice] mic capture started "
+                f"device={cfg.VOICE_MIC_DEVICE or 'default'} "
+                f"block={cfg.VOICE_MIC_BLOCK_MS}ms"
+            )
+        except Exception as exc:
+            print(f"[voice] mic InputStream FAILED: {exc}")
+            self._mic_stream = None
+            return
+
+        self._mic_pump_task = asyncio.create_task(self._mic_pump(loop))
+
+    async def _mic_pump(self, loop: asyncio.AbstractEventLoop) -> None:
+        """Pull PCM chunks from the cross-thread queue and capture them
+        into the LiveKit AudioSource at the rate sounddevice produces them.
+        """
+        sample_rate = cfg.VOICE_MIC_SAMPLE_RATE
+        try:
+            while True:
+                # Don't block the event loop — poll the thread-safe queue.
+                try:
+                    pcm = await asyncio.wait_for(
+                        loop.run_in_executor(None, self._mic_queue.get, True, 0.5),
+                        timeout=1.0,
+                    )
+                except (asyncio.TimeoutError, queue.Empty):
+                    continue
+
+                if self._audio_source is None or _lk_rtc is None:
+                    break
+
+                try:
+                    frame = _lk_rtc.AudioFrame(
+                        data=pcm,
+                        sample_rate=sample_rate,
+                        num_channels=1,
+                        samples_per_channel=len(pcm) // 2,  # int16 = 2 bytes
+                    )
+                    await self._audio_source.capture_frame(frame)
+                except Exception as exc:
+                    print(f"[voice] capture_frame err: {exc}")
+        except asyncio.CancelledError:
+            pass
+
+    async def _stop_mic(self) -> None:
+        if self._mic_pump_task is not None and not self._mic_pump_task.done():
+            self._mic_pump_task.cancel()
+            try:
+                await self._mic_pump_task
+            except (asyncio.CancelledError, Exception):
+                pass
+        self._mic_pump_task = None
+
+        if self._mic_stream is not None:
+            try:
+                self._mic_stream.stop()
+                self._mic_stream.close()
+            except Exception:
+                pass
+            self._mic_stream = None
+
+        self._audio_source = None
+
+    # ─── speaker (subscribe) ──────────────────────────────────────
+
+    async def _consume_audio(self, track) -> None:
+        """Pull frames from an agent's audio track and play them.
+
+        Mirrors capstone.voice-src/src/listen_local.py — the OutputStream
+        is opened lazily on the first frame so its sample rate matches the
+        TTS engine (ElevenLabs typically emits 24kHz).
+        """
+        if not _HAS_SOUNDDEVICE or _sd is None:
+            if not self._audio_warned_no_sd:
+                print(
+                    "[voice] sounddevice not available — speaker output disabled. "
+                    "Install: pip install sounddevice"
+                )
+                self._audio_warned_no_sd = True
+            return
+        if not _HAS_NUMPY or _np is None:
+            print("[voice] numpy not available — speaker output disabled.")
+            return
+        if _lk_rtc is None:
+            return
+
+        try:
+            stream = _lk_rtc.AudioStream(track)
+            async for ev in stream:
+                frame = ev.frame
+                if frame is None:
+                    continue
+
+                samples = _np.frombuffer(frame.data, dtype=_np.int16)
+                channels = max(1, frame.num_channels)
+
+                with self._spk_stream_lock:
+                    if self._spk_stream is None:
+                        try:
+                            self._spk_stream = _sd.OutputStream(
+                                samplerate=frame.sample_rate,
+                                channels=channels,
+                                dtype="int16",
+                                device=cfg.VOICE_SPEAKER_DEVICE,
+                            )
+                            self._spk_stream.start()
+                            print(
+                                f"[voice] speaker started "
+                                f"{frame.sample_rate}Hz x{channels}ch "
+                                f"device={cfg.VOICE_SPEAKER_DEVICE or 'default'}"
+                            )
+                        except Exception as exc:
+                            print(f"[voice] speaker open FAILED: {exc}")
+                            self._spk_stream = None
+                            return
+
+                if channels > 1:
+                    samples = samples.reshape(-1, channels)
+
+                try:
+                    self._spk_stream.write(samples)
+                except Exception as exc:
+                    print(f"[voice] speaker write err: {exc}")
+                    break
+        except asyncio.CancelledError:
+            pass
+        except Exception as exc:
+            print(f"[voice] audio consume err: {exc}")
+
+    def _stop_speaker(self) -> None:
+        with self._spk_stream_lock:
+            if self._spk_stream is not None:
+                try:
+                    self._spk_stream.stop()
+                    self._spk_stream.close()
+                except Exception:
+                    pass
+                self._spk_stream = None
