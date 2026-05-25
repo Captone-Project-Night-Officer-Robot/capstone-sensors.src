@@ -2,8 +2,10 @@
 
 Production source for the Yahboom Raspberry Pi 4WD car running on a
 Raspberry Pi 4B. Camera-based **white-line tracking** with **obstacle stop +
-line search**, **remote fall detection** (YOLO on your laptop), and a
-**LiveKit voice agent** that talks to a fallen person until help arrives.
+line search**, **remote fall detection** (YOLO on your laptop), a
+**LiveKit voice agent** that talks to a fallen person until help arrives,
+and a **live map dashboard** that draws the explored path and pins every
+detected fall.
 
 ---
 
@@ -27,6 +29,11 @@ follow line  →  obstacle ahead  →  stop + sweep  →  line found again  → 
 follow line  →  fall detected   →  stop + voice  →  conversation ends  →  search → follow
 ```
 
+In parallel, the **telemetry publisher** streams the robot's estimated
+pose (x, y, heading) to the laptop at 5 Hz and pushes a fall pin every
+time YOLO transitions to `falling=True`. The laptop renders both on a
+live map at `http://<laptop-ip>:8001/dashboard`.
+
 ---
 
 ## Project structure
@@ -42,11 +49,15 @@ capstone-sensors.src/
 │   ├── apps/
 │   │   └── line_follow.py        # main app + state machine
 │   ├── hardware/
-│   │   ├── motor.py              # YB_Pcb_Car driver
+│   │   ├── motor.py              # YB_Pcb_Car driver (+ odometer hook)
 │   │   ├── ultrasonic.py         # HC-SR04, background-thread polling
 │   │   ├── ir_sensors.py         # dual IR (active-low)
 │   │   ├── avoider.py            # Sensors aggregator (ultrasonic + IR)
 │   │   └── pid.py
+│   ├── localization/
+│   │   └── odometer.py           # dead-reckoning (x, y, theta) from motor cmds
+│   ├── telemetry/
+│   │   └── publisher.py          # POSTs pose + fall pins to the laptop API
 │   ├── vision/
 │   │   ├── camera.py
 │   │   ├── white_line_detector.py
@@ -850,6 +861,122 @@ Add this for operator overhear on the laptop (optional):
 
 ---
 
+# Map dashboard (live path + fall pins)
+
+The Pi streams its estimated pose + fall events to the voice-src API, which
+serves a live map at `http://<laptop-ip>:8001/dashboard`. As the robot
+drives, the dashboard draws a colored polyline of where it has been
+(green = follow, yellow = search, orange = obstacle, red = fall stop,
+blue = voice). Each detected fall drops a red pin at the robot's pose
+the instant YOLO transitioned `falling=False → True`.
+
+No GPS. Pose comes from **dead reckoning** — there are no wheel encoders
+or IMU on a stock Yahboom Pi4WD, so the odometer integrates the same
+motor commands that drive the wheels. Expect drift on turns; the map is
+a sketch of the explored area, not a survey.
+
+## A. Start the voice-src API (laptop)
+
+The dashboard lives inside the existing voice-src FastAPI. If you're
+already running the voice agent you do not need a second process:
+
+```bash
+cd capstone.voice-src
+source .venv/bin/activate
+uvicorn src.main:app --host 0.0.0.0 --port 8001
+```
+
+Then open `http://<laptop-ip>:8001/dashboard` in any browser.
+
+## B. Point the Pi at the API
+
+`raspbot/config.py` already defaults `TELEMETRY_API_URL` to `VOICE_API_URL`,
+so if the voice agent works, telemetry works.
+
+```python
+TELEMETRY_ENABLED = True
+TELEMETRY_API_URL = VOICE_API_URL     # same laptop, same port (8001)
+TELEMETRY_ROBOT_ID = VOICE_ROBOT_ID   # same identifier on the map
+TELEMETRY_PUBLISH_HZ = 5.0            # POSTs per second
+```
+
+## C. Run the car with telemetry on
+
+```bash
+python -m raspbot.apps.line_follow --camera picamera2 --telemetry --debug
+```
+
+Expected log:
+
+```text
+[app] Telemetry ON. API: http://192.168.1.55:8001
+[app] White-line follower started. Stop with Ctrl+C.
+```
+
+Add `--fall-detection` and `--voice` to get fall pins on the map and the
+voice agent triggered on each fall:
+
+```bash
+python -m raspbot.apps.line_follow \
+    --camera picamera2 \
+    --stream --fall-detection --voice --telemetry --debug
+```
+
+## D. Calibrate the odometer (one minute, do this once)
+
+One number drives the map's scale: `cfg.ODOMETRY_MPS_PER_MOTOR_UNIT`.
+
+1. Put the car on the floor.
+2. Run forward at known speed for known time:
+
+```bash
+python -c "
+from raspbot.hardware.motor import MotorController
+import time
+m = MotorController(); m.forward(35); time.sleep(5); m.stop(); m.safe_stop()
+"
+```
+
+3. Measure the distance traveled in meters.
+4. Set `ODOMETRY_MPS_PER_MOTOR_UNIT = distance / (35 * 5)`.
+
+Default `0.005` matches roughly 25 cm/s at speed 35 on a fully-charged
+Raspbot. Fine-tune by driving a known path and comparing the polyline
+length on the dashboard.
+
+Turn accuracy will still drift since there's no IMU — this is expected.
+For a several-minute demo loop the path *shape* is recognizable; for
+hour-long runs you would want an MPU6050 + complementary filter.
+
+## E. Endpoints (for debugging)
+
+```text
+POST /api/v1/telemetry/pose      Pi → API (5 Hz)
+POST /api/v1/telemetry/fall      Pi → API (on each fall edge)
+GET  /api/v1/telemetry/snapshot  full path + falls per robot
+POST /api/v1/telemetry/reset     clear server state (?robot_id=… optional)
+WS   /api/v1/telemetry/ws        broadcast to dashboards
+```
+
+Quick sanity check from the Pi:
+
+```bash
+curl -s http://<laptop-ip>:8001/api/v1/telemetry/snapshot | python3 -m json.tool
+```
+
+## Troubleshooting
+
+| Symptom                                                | Fix                                                                          |
+|--------------------------------------------------------|------------------------------------------------------------------------------|
+| Dashboard says "reconnecting…" forever                  | Voice API not running, or wrong port. `curl http://<laptop>:8001/api/v1/health` |
+| `[telemetry] pose POST failed`                          | Same as above. The Pi suppresses repeated warnings until it reconnects.      |
+| Path drifts heavily on every turn                       | Expected without an IMU. Calibrate `ODOMETRY_WHEEL_BASE_M` (try 0.11 / 0.15). |
+| Path is too short / too long for the actual run         | Recalibrate `ODOMETRY_MPS_PER_MOTOR_UNIT` (see section D).                    |
+| No fall pin when YOLO clearly fires                     | Pass **both** `--fall-detection` AND `--telemetry`. Pins fire on the edge.   |
+| Map keeps the old path after restart                    | `curl -X POST http://<laptop>:8001/api/v1/telemetry/reset` or click "reset" in the dashboard sidebar. |
+
+---
+
 # Tuning
 
 All knobs live in `raspbot/config.py`.
@@ -944,6 +1071,10 @@ Options:
   --voice                         Trigger LiveKit voice agent on fall
   --voice-api URL                 (default: config.VOICE_API_URL)
   --voice-robot-id ID             (default: config.VOICE_ROBOT_ID)
+
+  --telemetry                     Stream pose + fall pins to the map dashboard
+  --telemetry-api URL             (default: config.TELEMETRY_API_URL)
+  --telemetry-robot-id ID         (default: config.TELEMETRY_ROBOT_ID)
 ```
 
 ---
@@ -965,4 +1096,5 @@ python -m raspbot.apps.line_follow --camera picamera2
 python -m raspbot.apps.line_follow --camera picamera2 --stream
 python -m raspbot.apps.line_follow --camera picamera2 --stream --fall-detection
 python -m raspbot.apps.line_follow --camera picamera2 --stream --fall-detection --voice
+python -m raspbot.apps.line_follow --camera picamera2 --stream --fall-detection --voice --telemetry
 ```

@@ -316,3 +316,44 @@ VOICE_MIC_QUEUE_MAX = 25
 #   3. Only then raise this value above 1.0.  1.5–2.0 is usually safe
 #      for ElevenLabs TTS; 3.0+ will start to clip on loud syllables.
 VOICE_SPEAKER_GAIN = 1.0
+
+
+# -----------------------------
+# Telemetry — odometry + map dashboard
+# The Pi runs a dead-reckoning odometer (no encoders / IMU on a stock
+# Yahboom Pi4WD) and pushes pose + fall events to the voice-src API.
+# The laptop serves a live map dashboard at /dashboard.
+# -----------------------------
+
+TELEMETRY_ENABLED = True
+
+# Base URL of the laptop service that hosts the telemetry endpoints.
+# Defaults to the voice-src API (same FastAPI process).
+TELEMETRY_API_URL = VOICE_API_URL
+
+# Identifier reported to the telemetry API. Reuse the voice robot id so
+# both stay in sync.
+TELEMETRY_ROBOT_ID = VOICE_ROBOT_ID
+
+# Pose POSTs per second. 5 Hz is enough for a 30 cm/s robot and keeps
+# the laptop's WebSocket fan-out comfortable.
+TELEMETRY_PUBLISH_HZ = 5.0
+
+# Odometry integration rate (Hz). Higher = smoother but more CPU.
+ODOMETRY_INTEGRATION_HZ = 20.0
+
+# Linear calibration: meters per second per motor-speed unit.
+# Calibrate once by driving forward at a known speed for a known time:
+#     m_per_unit = measured_meters / (speed_unit * seconds)
+# Default 0.005 ≈ 25 cm/s at speed 50 — a reasonable starting point for a
+# fully-charged Yahboom on smooth tile.
+ODOMETRY_MPS_PER_MOTOR_UNIT = 0.005
+
+# Effective wheel base (meters between the contact patches of the two
+# driven sides). Yahboom Pi4WD is ~13 cm; tune higher if turns over-rotate
+# on the dashboard, lower if they under-rotate.
+ODOMETRY_WHEEL_BASE_M = 0.13
+
+# HTTP timeout per telemetry POST. Telemetry must not block the control
+# loop, so keep this small. The publisher swallows failures.
+TELEMETRY_TIMEOUT_SEC = 1.0

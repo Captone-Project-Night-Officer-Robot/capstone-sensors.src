@@ -36,6 +36,8 @@ import raspbot.config as cfg
 from raspbot.hardware.avoider import Sensors
 from raspbot.hardware.motor import MotorController
 from raspbot.hardware.pid import PIDController
+from raspbot.localization.odometer import Odometer
+from raspbot.telemetry.publisher import TelemetryPublisher
 from raspbot.vision.camera import create_camera
 from raspbot.vision.fall_detector import FallDetectorClient
 from raspbot.vision.mjpeg_server import MJPEGServer
@@ -220,6 +222,13 @@ def _parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--voice-api", default=cfg.VOICE_API_URL)
     parser.add_argument("--voice-robot-id", default=cfg.VOICE_ROBOT_ID)
+    parser.add_argument(
+        "--telemetry",
+        action="store_true",
+        help="Stream pose + fall pins to the laptop map dashboard.",
+    )
+    parser.add_argument("--telemetry-api", default=cfg.TELEMETRY_API_URL)
+    parser.add_argument("--telemetry-robot-id", default=cfg.TELEMETRY_ROBOT_ID)
     return parser.parse_args()
 
 
@@ -236,10 +245,23 @@ def main() -> None:
         fps=cfg.CAMERA_FPS,
     )
 
+    # These two are read by a background telemetry thread, so declare them
+    # before any thread starts to avoid an UnboundLocalError at startup.
+    prev_state: State | None = None
+    prev_falling = False
+
     motor = MotorController(dry_run=args.dry_run)
     detector = WhiteLineDetector()
     searcher = LineSearcher()
     avoider = ObstacleAvoider()
+
+    # Odometer integrates motor commands into a (x, y, theta) pose in meters.
+    # Drift is real (no encoders, no IMU); good enough to sketch the path.
+    odometer = Odometer()
+    motor.set_observer(odometer.set_wheels)
+    odometer.start()
+
+    telemetry: TelemetryPublisher | None = None
 
     sensors: Sensors | None = None
     if cfg.SENSORS_ENABLED and not args.no_sensors:
@@ -273,6 +295,20 @@ def main() -> None:
         )
         print(f"[app] Voice agent ON. API: {args.voice_api}")
 
+    # Telemetry runs even without fall detection — the dashboard map is
+    # interesting on its own. Falls just add pins when --fall-detection is on.
+    if args.telemetry and cfg.TELEMETRY_ENABLED:
+        telemetry = TelemetryPublisher(
+            api_url=args.telemetry_api,
+            robot_id=args.telemetry_robot_id,
+            get_pose=odometer.pose,
+            get_state=lambda: (prev_state.value if prev_state else "init"),
+            publish_hz=cfg.TELEMETRY_PUBLISH_HZ,
+            timeout_sec=cfg.TELEMETRY_TIMEOUT_SEC,
+        )
+        telemetry.start()
+        print(f"[app] Telemetry ON. API: {args.telemetry_api}")
+
     fall_client: FallDetectorClient | None = None
     if args.fall_detection:
         try:
@@ -305,7 +341,6 @@ def main() -> None:
             cv2.resizeWindow(name, cfg.DEBUG_WINDOW_WIDTH, cfg.DEBUG_WINDOW_HEIGHT)
 
     frame_idx = 0
-    prev_state: State | None = None
 
     try:
         while True:
@@ -315,6 +350,12 @@ def main() -> None:
 
             fall_state = fall_client.state() if fall_client is not None else None
             falling = bool(fall_state and fall_state.falling)
+
+            # Edge detect: drop a pin on the map the moment a fall starts.
+            if telemetry is not None and falling and not prev_falling:
+                x, y, _ = odometer.pose()
+                telemetry.emit_fall(x, y)
+            prev_falling = falling
 
             distance_cm = sensors.distance_cm() if sensors is not None else float("inf")
             obstacle_ahead = (
@@ -395,6 +436,9 @@ def main() -> None:
             voice.shutdown()
         if fall_client is not None:
             fall_client.stop()
+        if telemetry is not None:
+            telemetry.shutdown()
+        odometer.stop()
         if stream_server is not None:
             stream_server.stop()
         if sensors is not None:
