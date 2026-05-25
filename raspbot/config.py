@@ -243,6 +243,31 @@ FALL_STALE_AFTER_SEC = 3.0
 
 
 # -----------------------------
+# Fall verification & resume
+# A single noisy YOLO frame shouldn't drop a pin on the map or trigger the
+# voice agent. The car *stops immediately* on the first `falling=True`
+# (State.VERIFY), then watches the signal. Only after it has held
+# continuously for FALL_VERIFY_SECONDS does the verifier promote to
+# State.FALL, drop the pin, and unblock the voice trigger.
+#
+# If the signal flickers off before the verify window finishes, the verifier
+# resets and the car resumes driving — no pin, no conversation.
+# -----------------------------
+
+# Seconds of *continuous* falling=True required to confirm a fall.
+# Lower → faster reaction but more false-positive pins.
+# Higher → fewer false alarms, but a real fall waits longer for help.
+# 1.0–2.0s is the sweet spot in practice.
+FALL_VERIFY_SECONDS = 1.5
+
+# Seconds the car stays parked after a voice session ends, before it
+# resumes line-following. Gives the operator a beat to react and lets
+# YOLO settle so a flicker doesn't immediately re-trigger VERIFY. Set to
+# 0 to resume instantly.
+POST_VOICE_PAUSE_SEC = 1.0
+
+
+# -----------------------------
 # Voice-agent integration (capstone.voice-src)
 # -----------------------------
 

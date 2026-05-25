@@ -40,6 +40,7 @@ from raspbot.localization.odometer import Odometer
 from raspbot.telemetry.publisher import TelemetryPublisher
 from raspbot.vision.camera import create_camera
 from raspbot.vision.fall_detector import FallDetectorClient
+from raspbot.vision.fall_verifier import FallVerifier
 from raspbot.vision.mjpeg_server import MJPEGServer
 from raspbot.vision.white_line_detector import WhiteLineDetector, draw_debug
 from raspbot.voice.voice_agent_client import VoiceAgentClient
@@ -170,8 +171,10 @@ class State(Enum):
     FOLLOW = "follow"
     SEARCH = "search"
     OBSTACLE = "obstacle"
-    FALL = "fall"
+    VERIFY = "verify"    # stopped, waiting for YOLO to confirm the fall
+    FALL = "fall"        # fall confirmed: pin dropped, voice may trigger
     VOICE = "voice"
+    RESUMING = "resuming"  # voice ended; brief stabilization pause before driving
 
 
 # ─── helpers ─────────────────────────────────────────────────────────────────
@@ -245,15 +248,15 @@ def main() -> None:
         fps=cfg.CAMERA_FPS,
     )
 
-    # These two are read by a background telemetry thread, so declare them
-    # before any thread starts to avoid an UnboundLocalError at startup.
+    # Read by a background telemetry thread, so declare it before any thread
+    # starts to avoid an UnboundLocalError at startup.
     prev_state: State | None = None
-    prev_falling = False
 
     motor = MotorController(dry_run=args.dry_run)
     detector = WhiteLineDetector()
     searcher = LineSearcher()
     avoider = ObstacleAvoider()
+    fall_verifier = FallVerifier(verify_seconds=cfg.FALL_VERIFY_SECONDS)
 
     # Odometer integrates motor commands into a (x, y, theta) pose in meters.
     # Drift is real (no encoders, no IMU); good enough to sketch the path.
@@ -262,6 +265,7 @@ def main() -> None:
     odometer.start()
 
     telemetry: TelemetryPublisher | None = None
+    resume_at_monotonic = 0.0  # time.monotonic() until which we stay parked after voice
 
     sensors: Sensors | None = None
     if cfg.SENSORS_ENABLED and not args.no_sensors:
@@ -351,11 +355,18 @@ def main() -> None:
             fall_state = fall_client.state() if fall_client is not None else None
             falling = bool(fall_state and fall_state.falling)
 
-            # Edge detect: drop a pin on the map the moment a fall starts.
-            if telemetry is not None and falling and not prev_falling:
+            # Verifier: stops the car on first hit, but only confirms after the
+            # signal has held for FALL_VERIFY_SECONDS. Pin + voice trigger
+            # consume the *confirmed* status, not the raw YOLO frame.
+            prev_fall_status = fall_verifier.status
+            fall_status = fall_verifier.update(falling)
+            just_confirmed = (
+                prev_fall_status != "confirmed" and fall_status == "confirmed"
+            )
+
+            if telemetry is not None and just_confirmed:
                 x, y, _ = odometer.pose()
                 telemetry.emit_fall(x, y)
-            prev_falling = falling
 
             distance_cm = sensors.distance_cm() if sensors is not None else float("inf")
             obstacle_ahead = (
@@ -370,16 +381,24 @@ def main() -> None:
             ):
                 stream_server.push("fall", fall_state.annotated_frame)
 
-            # Drive the voice client's debounce. We stop immediately on fall,
-            # so `arrived` always matches `falling`.
+            # Drive the voice client's debounce. Only feed `falling=True`
+            # once the verifier has *confirmed* — otherwise the voice client
+            # would start arming on every YOLO flicker.
+            confirmed_fall = fall_status == "confirmed"
             if voice is not None:
-                voice.tick(falling=falling, arrived=falling)
+                voice.tick(falling=confirmed_fall, arrived=confirmed_fall)
 
             # ── 2. DECIDE ───────────────────────────────────────────────────
+            now_mono = time.monotonic()
             if voice is not None and voice.is_active():
                 state = State.VOICE
-            elif falling:
+            elif fall_status == "confirmed":
                 state = State.FALL
+            elif fall_status == "verifying":
+                state = State.VERIFY
+            elif now_mono < resume_at_monotonic:
+                # Voice ended recently — stay parked until the pause window expires.
+                state = State.RESUMING
             elif obstacle_ahead:
                 state = State.OBSTACLE
             elif detection.found:
@@ -387,8 +406,14 @@ def main() -> None:
             else:
                 state = State.SEARCH
 
+            # Arm the post-voice pause the instant we leave VOICE.
+            if prev_state == State.VOICE and state != State.VOICE:
+                resume_at_monotonic = now_mono + cfg.POST_VOICE_PAUSE_SEC
+                if state in (State.FOLLOW, State.SEARCH, State.OBSTACLE):
+                    state = State.RESUMING
+
             # ── 3. ACT ──────────────────────────────────────────────────────
-            if state in (State.VOICE, State.FALL):
+            if state in (State.VOICE, State.FALL, State.VERIFY, State.RESUMING):
                 motor.stop()
                 steering_pid.reset()
                 searcher.reset()
@@ -412,7 +437,10 @@ def main() -> None:
 
             # ── 4. LOG / RENDER ─────────────────────────────────────────────
             if args.debug and (state != prev_state or frame_idx % 30 == 0):
-                _log_state(state, detection, distance_cm, voice, fall_state, frame_idx)
+                _log_state(
+                    state, detection, distance_cm, voice, fall_state,
+                    frame_idx, fall_verifier,
+                )
 
             if render_debug:
                 debug = draw_debug(frame, detection)
@@ -457,6 +485,7 @@ def _log_state(
     voice: VoiceAgentClient | None,
     fall_state,
     frame_idx: int,
+    fall_verifier: FallVerifier | None = None,
 ) -> None:
     dist = "inf" if distance_cm == float("inf") else f"{distance_cm:.1f}cm"
     line = (
@@ -465,6 +494,10 @@ def _log_state(
     extras = []
     if fall_state is not None:
         extras.append(f"falling={fall_state.falling}")
+    if fall_verifier is not None and fall_verifier.status != "idle":
+        extras.append(
+            f"verify={fall_verifier.status}({fall_verifier.held_seconds():.1f}s)"
+        )
     if voice is not None and voice.is_active():
         extras.append(f"room={voice.current_room()}")
     extras_str = "  " + "  ".join(extras) if extras else ""

@@ -17,16 +17,20 @@ order (highest first):
 | # | State      | Trigger                                         | Action                                  |
 |---|------------|-------------------------------------------------|-----------------------------------------|
 | 1 | `VOICE`    | A voice session is active                       | STAY parked. Don't drive mid-conversation. |
-| 2 | `FALL`     | YOLO says someone is falling                    | STOP immediately. Voice agent is triggered. |
-| 3 | `OBSTACLE` | Ultrasonic ≤ `OBSTACLE_DISTANCE_CM`             | STOP, then sweep to **search the white line** (find a heading that bypasses the obstacle). |
-| 4 | `FOLLOW`   | White line visible                              | PID differential drive along the line.  |
-| 5 | `SEARCH`   | White line not visible                          | Alternating left/right sweep until the line is reacquired. |
+| 2 | `FALL`     | Fall verified (held `FALL_VERIFY_SECONDS`)      | STOP. Drop pin on map. Voice agent triggers. |
+| 3 | `VERIFY`   | YOLO just said falling, not yet confirmed       | STOP and watch. If signal drops, resume — no pin, no voice. |
+| 4 | `RESUMING` | Voice ended within `POST_VOICE_PAUSE_SEC`       | STAY parked briefly so YOLO can settle. |
+| 5 | `OBSTACLE` | Ultrasonic ≤ `OBSTACLE_DISTANCE_CM`             | STOP, then sweep to **search the white line** (find a heading that bypasses the obstacle). |
+| 6 | `FOLLOW`   | White line visible                              | PID differential drive along the line.  |
+| 7 | `SEARCH`   | White line not visible                          | Alternating left/right sweep until the line is reacquired. |
 
 End-to-end flow the robot performs:
 
 ```text
-follow line  →  obstacle ahead  →  stop + sweep  →  line found again  →  follow
-follow line  →  fall detected   →  stop + voice  →  conversation ends  →  search → follow
+follow line  →  obstacle ahead       →  stop + sweep        →  line found again         →  follow
+follow line  →  YOLO falling=True    →  STOP (verify)       →  flicker, signal drops   →  follow   (false alarm, no pin)
+follow line  →  YOLO falling=True    →  STOP (verify)       →  held FALL_VERIFY_SECONDS →  fall + pin + voice
+voice ends   →  POST_VOICE_PAUSE_SEC →  resuming (stopped)  →  search → follow
 ```
 
 In parallel, the **telemetry publisher** streams the robot's estimated
@@ -1016,6 +1020,25 @@ STEERING_PID_INTEGRAL_LIMIT= 200
 
 Tune in this order: KI=KD=0, raise KP until it just barely holds the line.
 Add KD to damp wobble. Add KI only if there's persistent off-center drift.
+
+## Fall verification & post-voice resume
+
+```python
+FALL_VERIFY_SECONDS = 1.5     # held this long before fall confirms (pin + voice)
+POST_VOICE_PAUSE_SEC = 1.0    # stay parked this long after voice ends
+```
+
+`FALL_VERIFY_SECONDS` is the main knob for fall reliability. Lower → faster
+response, more false-positive pins. Higher → fewer false alarms, real falls
+wait longer for help. 1.0–2.0 s is the sweet spot.
+
+`POST_VOICE_PAUSE_SEC` is a stabilization beat after a voice session ends —
+without it the car can immediately re-enter VERIFY on YOLO flicker before
+the person has finished standing up.
+
+If you also want to control how *eagerly* the voice trigger fires once the
+verifier confirms, lower `VOICE_TRIGGER_STOP_SECONDS` (the two debounces
+stack — total response = `FALL_VERIFY_SECONDS + VOICE_TRIGGER_STOP_SECONDS`).
 
 ## Obstacle threshold
 
