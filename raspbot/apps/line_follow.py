@@ -267,6 +267,10 @@ def main() -> None:
     telemetry: TelemetryPublisher | None = None
     resume_at_monotonic = 0.0  # time.monotonic() until which we stay parked after voice
 
+    # Main-loop FPS estimator — sliding window of frame timestamps.
+    main_loop_ticks: list[float] = []
+    MAIN_LOOP_TICK_MAX = 30
+
     sensors: Sensors | None = None
     if cfg.SENSORS_ENABLED and not args.no_sensors:
         try:
@@ -302,11 +306,31 @@ def main() -> None:
     # Telemetry runs even without fall detection — the dashboard map is
     # interesting on its own. Falls just add pins when --fall-detection is on.
     if args.telemetry and cfg.TELEMETRY_ENABLED:
+
+        def _get_metrics() -> dict:
+            # Pi main-loop FPS from the rolling tick log.
+            if len(main_loop_ticks) >= 2:
+                span = main_loop_ticks[-1] - main_loop_ticks[0]
+                main_fps = (len(main_loop_ticks) - 1) / span if span > 0 else 0.0
+            else:
+                main_fps = 0.0
+            fs = fall_client.state() if fall_client is not None else None
+            return {
+                "main_fps": round(main_fps, 1),
+                "fall_fps": round(fs.fps, 1) if fs else 0.0,
+                "fall_infer_ms": round(fs.infer_ms, 1) if fs else 0.0,
+                "people": len(fs.people) if fs else 0,
+                "tracked_falling_ids": (
+                    list(fs.falling_ids) if fs else []
+                ),
+            }
+
         telemetry = TelemetryPublisher(
             api_url=args.telemetry_api,
             robot_id=args.telemetry_robot_id,
             get_pose=odometer.pose,
             get_state=lambda: (prev_state.value if prev_state else "init"),
+            get_metrics=_get_metrics,
             publish_hz=cfg.TELEMETRY_PUBLISH_HZ,
             timeout_sec=cfg.TELEMETRY_TIMEOUT_SEC,
         )
@@ -353,20 +377,22 @@ def main() -> None:
             detection = detector.detect(frame)
 
             fall_state = fall_client.state() if fall_client is not None else None
-            falling = bool(fall_state and fall_state.falling)
+            falling_ids = list(fall_state.falling_ids) if fall_state else []
 
-            # Verifier: stops the car on first hit, but only confirms after the
-            # signal has held for FALL_VERIFY_SECONDS. Pin + voice trigger
-            # consume the *confirmed* status, not the raw YOLO frame.
+            # Verifier: stops the car on first hit, but only confirms a track
+            # ID after it has held continuously for FALL_VERIFY_SECONDS. Pin
+            # + voice trigger consume the *confirmed* status, not the raw
+            # YOLO frame.
             prev_fall_status = fall_verifier.status
-            fall_status = fall_verifier.update(falling)
+            tick = fall_verifier.update(falling_ids)
+            fall_status = tick.status
             just_confirmed = (
                 prev_fall_status != "confirmed" and fall_status == "confirmed"
             )
 
             if telemetry is not None and just_confirmed:
                 x, y, _ = odometer.pose()
-                telemetry.emit_fall(x, y)
+                telemetry.emit_fall(x, y, track_id=tick.primary_id)
 
             distance_cm = sensors.distance_cm() if sensors is not None else float("inf")
             obstacle_ahead = (
@@ -452,6 +478,11 @@ def main() -> None:
                     cv2.imshow("white-line-mask", detection.mask)
                     if (cv2.waitKey(1) & 0xFF) == ord("q"):
                         break
+
+            # Update the rolling main-loop FPS log.
+            main_loop_ticks.append(time.time())
+            if len(main_loop_ticks) > MAIN_LOOP_TICK_MAX:
+                del main_loop_ticks[: len(main_loop_ticks) - MAIN_LOOP_TICK_MAX]
 
             prev_state = state
             frame_idx += 1

@@ -71,11 +71,15 @@ def _filled_label(
 @dataclass
 class FallState:
     falling: bool = False
+    falling_ids: list[int] = field(default_factory=list)
     people: list[dict[str, Any]] = field(default_factory=list)
     infer_ms: float = 0.0
     last_update: float = 0.0
     last_error: str = ""
     annotated_frame: np.ndarray | None = None
+    # Measured FPS of the fall-camera pipeline (frame read + send + decode).
+    # Updated on every successful POST.
+    fps: float = 0.0
 
 
 class FallDetectorClient:
@@ -105,6 +109,10 @@ class FallDetectorClient:
         self._thread: threading.Thread | None = None
         self._cap: cv2.VideoCapture | None = None
         self._session = requests.Session()
+        # Sliding-window FPS estimator. Records the timestamps of recent
+        # successful inferences; FPS = N / (newest - oldest).
+        self._tick_log: list[float] = []
+        self._tick_log_max = 30
 
     def start(self) -> None:
         if self._thread is not None:
@@ -141,11 +149,13 @@ class FallDetectorClient:
             if time.time() - s.last_update > self.stale_after_sec:
                 return FallState(
                     falling=False,
+                    falling_ids=[],
                     people=[],
                     infer_ms=s.infer_ms,
                     last_update=s.last_update,
                     last_error="stale",
                     annotated_frame=s.annotated_frame,
+                    fps=0.0,
                 )
             return s
 
@@ -168,14 +178,34 @@ class FallDetectorClient:
                 result = self._send(frame)
                 annotated = self._annotate(frame, result)
 
+                # Update FPS estimator on every successful POST.
+                now = time.time()
+                self._tick_log.append(now)
+                if len(self._tick_log) > self._tick_log_max:
+                    del self._tick_log[: len(self._tick_log) - self._tick_log_max]
+                if len(self._tick_log) >= 2:
+                    span = self._tick_log[-1] - self._tick_log[0]
+                    fps = (len(self._tick_log) - 1) / span if span > 0 else 0.0
+                else:
+                    fps = 0.0
+
+                people = result.get("people", [])
+                falling_ids = [
+                    int(p["track_id"])
+                    for p in people
+                    if p.get("is_falling") and p.get("track_id") is not None
+                ]
+
                 with self._lock:
                     self._state = FallState(
                         falling=bool(result.get("falling", False)),
-                        people=result.get("people", []),
+                        falling_ids=falling_ids,
+                        people=people,
                         infer_ms=float(result.get("infer_ms", 0.0)),
-                        last_update=time.time(),
+                        last_update=now,
                         last_error="",
                         annotated_frame=annotated,
+                        fps=fps,
                     )
             except Exception as exc:
                 with self._lock:
@@ -212,9 +242,11 @@ class FallDetectorClient:
         for p in result.get("people", []):
             x1, y1, x2, y2 = p["bbox"]
             falling = bool(p.get("is_falling"))
+            track_id = p.get("track_id")
             color = (0, 0, 255) if falling else (0, 255, 0)
+            id_tag = f"#{track_id} " if track_id is not None else ""
             label = (
-                f"{p.get('class','?').upper()}  "
+                f"{id_tag}{p.get('class','?').upper()}  "
                 f"{int(p.get('confidence', 0) * 100)}%"
                 + ("  FALL" if falling else "")
             )
@@ -230,12 +262,22 @@ class FallDetectorClient:
 
         infer_ms = float(result.get("infer_ms", 0.0))
         n_people = len(result.get("people", []))
+        fps_hint = self._tick_log_fps_hint()
         cv2.putText(
-            out, f"infer {infer_ms:.0f}ms  people={n_people}",
+            out,
+            f"infer {infer_ms:.0f}ms  people={n_people}  cam={fps_hint:.1f}fps",
             (10, out.shape[0] - 10),
             cv2.FONT_HERSHEY_SIMPLEX, 0.4, (200, 200, 200), 1,
         )
         return out
+
+    def _tick_log_fps_hint(self) -> float:
+        # Used only inside _annotate; safe to read without the lock since it's
+        # touched on the same thread that owns _tick_log.
+        if len(self._tick_log) < 2:
+            return 0.0
+        span = self._tick_log[-1] - self._tick_log[0]
+        return (len(self._tick_log) - 1) / span if span > 0 else 0.0
 
     def _annotate_error(self, frame: np.ndarray, exc: Exception) -> np.ndarray:
         out = frame.copy()

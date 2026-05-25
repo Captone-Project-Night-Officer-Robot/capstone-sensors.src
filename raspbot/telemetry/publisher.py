@@ -20,6 +20,7 @@ import raspbot.config as cfg
 
 PoseFn = Callable[[], Tuple[float, float, float]]
 StateFn = Callable[[], str]
+MetricsFn = Callable[[], dict]
 
 
 class TelemetryPublisher:
@@ -29,6 +30,7 @@ class TelemetryPublisher:
         robot_id: str,
         get_pose: PoseFn,
         get_state: StateFn,
+        get_metrics: MetricsFn | None = None,
         publish_hz: float = 5.0,
         timeout_sec: float = 1.0,
     ) -> None:
@@ -36,6 +38,7 @@ class TelemetryPublisher:
         self.robot_id = robot_id
         self.get_pose = get_pose
         self.get_state = get_state
+        self.get_metrics = get_metrics
         self.publish_hz = max(0.5, float(publish_hz))
         self.timeout_sec = timeout_sec
 
@@ -54,16 +57,23 @@ class TelemetryPublisher:
     def shutdown(self) -> None:
         self._stop.set()
 
-    def emit_fall(self, x: float, y: float, ts: float | None = None) -> None:
+    def emit_fall(
+        self,
+        x: float,
+        y: float,
+        ts: float | None = None,
+        track_id: int | None = None,
+    ) -> None:
+        evt: dict = {
+            "robot_id": self.robot_id,
+            "x": float(x),
+            "y": float(y),
+            "ts": float(ts if ts is not None else time.time()),
+        }
+        if track_id is not None:
+            evt["track_id"] = int(track_id)
         with self._fall_lock:
-            self._fall_queue.append(
-                {
-                    "robot_id": self.robot_id,
-                    "x": float(x),
-                    "y": float(y),
-                    "ts": float(ts if ts is not None else time.time()),
-                }
-            )
+            self._fall_queue.append(evt)
 
     def _loop(self) -> None:
         dt = 1.0 / self.publish_hz
@@ -78,6 +88,15 @@ class TelemetryPublisher:
         except Exception:
             return
 
+        metrics: dict = {}
+        if self.get_metrics is not None:
+            try:
+                m = self.get_metrics()
+                if isinstance(m, dict):
+                    metrics = m
+            except Exception:
+                metrics = {}
+
         payload = {
             "robot_id": self.robot_id,
             "x": x,
@@ -85,6 +104,7 @@ class TelemetryPublisher:
             "theta": theta,
             "state": state,
             "ts": time.time(),
+            "metrics": metrics,
         }
         try:
             self._http.post(
