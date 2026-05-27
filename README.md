@@ -865,14 +865,25 @@ Add this for operator overhear on the laptop (optional):
 
 ---
 
-# Map dashboard (live path + fall pins)
+# Map dashboard (live path + fall pins + unified logs)
 
 The Pi streams its estimated pose + fall events to the voice-src API, which
 serves a live map at `http://<laptop-ip>:8001/dashboard`. As the robot
 drives, the dashboard draws a colored polyline of where it has been
 (green = follow, yellow = search, orange = obstacle, red = fall stop,
-blue = voice). Each detected fall drops a red pin at the robot's pose
-the instant YOLO transitioned `falling=False → True`.
+blue = voice). Each confirmed fall drops a red pin at the robot's pose
+the instant the verifier transitions `verifying → confirmed`.
+
+A **Live Logs** panel in the sidebar merges three feeds into one timeline:
+- `api` — the FastAPI process
+- `worker` — the LiveKit agent worker (greetings, STT/LLM events,
+  `dispatch_emergency` tool calls)
+- `<robot_id>` — events the Pi opts to publish: voice session start/end
+  and confirmed fall pins
+
+The Pi sends these via `telemetry.emit_log()` — sparingly, one line per
+interesting state change, so the dashboard doesn't flood. Per-frame
+state is on the map instead.
 
 No GPS. Pose comes from **dead reckoning** — there are no wheel encoders
 or IMU on a stock Yahboom Pi4WD, so the odometer integrates the same
@@ -956,8 +967,9 @@ hour-long runs you would want an MPU6050 + complementary filter.
 
 ```text
 POST /api/v1/telemetry/pose      Pi → API (5 Hz)
-POST /api/v1/telemetry/fall      Pi → API (on each fall edge)
-GET  /api/v1/telemetry/snapshot  full path + falls per robot
+POST /api/v1/telemetry/fall      Pi → API (on each confirmed fall edge)
+POST /api/v1/telemetry/log       Pi → API (key events: voice start/end, fall)
+GET  /api/v1/telemetry/snapshot  full path + falls + recent logs per robot
 POST /api/v1/telemetry/reset     clear server state (?robot_id=… optional)
 WS   /api/v1/telemetry/ws        broadcast to dashboards
 ```

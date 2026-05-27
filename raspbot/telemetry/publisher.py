@@ -75,6 +75,35 @@ class TelemetryPublisher:
         with self._fall_lock:
             self._fall_queue.append(evt)
 
+    def emit_log(self, level: str, message: str) -> None:
+        """Fire-and-forget log line to the dashboard. Best-effort, never blocks.
+
+        Use sparingly — one line per interesting state change (voice start /
+        end, fall confirmed, error). Per-frame logs would flood the WS.
+        """
+        t = threading.Thread(
+            target=self._post_log,
+            args=(level.upper(), str(message), time.time()),
+            daemon=True,
+        )
+        t.start()
+
+    def _post_log(self, level: str, message: str, ts: float) -> None:
+        try:
+            self._http.post(
+                f"{self.api_url}/api/v1/telemetry/log",
+                json={
+                    "source": self.robot_id,
+                    "level": level,
+                    "message": message,
+                    "ts": ts,
+                    "function": "raspbot",
+                },
+                timeout=self.timeout_sec,
+            )
+        except Exception:
+            pass
+
     def _loop(self) -> None:
         dt = 1.0 / self.publish_hz
         while not self._stop.wait(dt):

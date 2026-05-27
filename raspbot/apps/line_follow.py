@@ -393,6 +393,11 @@ def main() -> None:
             if telemetry is not None and just_confirmed:
                 x, y, _ = odometer.pose()
                 telemetry.emit_fall(x, y, track_id=tick.primary_id)
+                telemetry.emit_log(
+                    "WARNING",
+                    f"Fall confirmed track_id={tick.primary_id} "
+                    f"at ({x:.2f}, {y:.2f}) — dispatching voice agent.",
+                )
 
             distance_cm = sensors.distance_cm() if sensors is not None else float("inf")
             obstacle_ahead = (
@@ -437,6 +442,18 @@ def main() -> None:
                 resume_at_monotonic = now_mono + cfg.POST_VOICE_PAUSE_SEC
                 if state in (State.FOLLOW, State.SEARCH, State.OBSTACLE):
                     state = State.RESUMING
+                if telemetry is not None:
+                    telemetry.emit_log(
+                        "INFO",
+                        "Voice session ended — resuming line follow shortly.",
+                    )
+
+            # On entering VOICE, log it once.
+            if state == State.VOICE and prev_state != State.VOICE and telemetry is not None:
+                room = voice.current_room() if voice is not None else None
+                telemetry.emit_log(
+                    "INFO", f"Voice session active room={room}",
+                )
 
             # ── 3. ACT ──────────────────────────────────────────────────────
             if state in (State.VOICE, State.FALL, State.VERIFY, State.RESUMING):

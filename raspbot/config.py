@@ -220,7 +220,7 @@ OBSTACLE_TURN_SEC_PER_DEGREE = 0.012
 # -----------------------------
 
 # Replace with your laptop's IP — the one that runs server.py.
-FALL_SERVER_URL = "http://172.20.10.12:8000"
+FALL_SERVER_URL =  "http://172.20.10.12:8000"
 
 # Which USB camera (cv2.VideoCapture index) to read from.
 FALL_USB_CAMERA_INDEX = 0
@@ -229,10 +229,8 @@ FALL_CAMERA_HEIGHT = 480
 
 # Frames per second sent to the server. Fall events are slow — 5 fps is
 # plenty and keeps wifi/CPU load low.
-FALL_TARGET_FPS = 5
-
-# JPEG quality of uploaded frames. 70 is a good size/quality balance.
-FALL_JPEG_QUALITY = 70
+FALL_TARGET_FPS = 15
+FALL_JPEG_QUALITY = 60
 
 # Per-request HTTP timeout (sec). Increase if your laptop is slow.
 FALL_TIMEOUT_SEC = 2.0
@@ -283,9 +281,9 @@ VOICE_ROBOT_ID = "raspbot-01"
 VOICE_TRIGGER_STOP_SECONDS = 1.0
 
 # End the voice session when `falling` has been False this long.
-# 15s is the production default — long enough that YOLO flickers don't
+# 10s is the production default — long enough that YOLO flickers don't
 # drop the session, short enough that the agent doesn't talk to thin air.
-VOICE_END_AFTER_NO_FALL_SECONDS = 15.0
+VOICE_END_AFTER_NO_FALL_SECONDS = 10.0
 
 # HTTP timeout for the session-start call.
 VOICE_API_TIMEOUT_SEC = 5.0
