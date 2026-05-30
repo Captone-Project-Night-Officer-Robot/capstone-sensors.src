@@ -92,7 +92,7 @@ USE_MORPHOLOGY = True
 # lifted but the car won't actually move forward on the ground.
 # FORWARD_SPEED must also be > STEERING_PID_OUTPUT_LIMIT, otherwise the
 # slow wheel during a steering correction gets commanded to 0 and stalls.
-FORWARD_SPEED = 35
+FORWARD_SPEED = 40
 TURN_SPEED = 40
 SEARCH_TURN_SPEED = 22
 
@@ -224,13 +224,13 @@ FALL_SERVER_URL =  "http://172.20.10.12:8000"
 
 # Which USB camera (cv2.VideoCapture index) to read from.
 FALL_USB_CAMERA_INDEX = 0
-FALL_CAMERA_WIDTH = 640
-FALL_CAMERA_HEIGHT = 480
+FALL_CAMERA_WIDTH = 128
+FALL_CAMERA_HEIGHT = 128
 
 # Frames per second sent to the server. Fall events are slow — 5 fps is
 # plenty and keeps wifi/CPU load low.
-FALL_TARGET_FPS = 15
-FALL_JPEG_QUALITY = 60
+FALL_TARGET_FPS = 30
+FALL_JPEG_QUALITY = 40
 
 # Per-request HTTP timeout (sec). Increase if your laptop is slow.
 FALL_TIMEOUT_SEC = 2.0
@@ -283,7 +283,7 @@ VOICE_TRIGGER_STOP_SECONDS = 1.0
 # End the voice session when `falling` has been False this long.
 # 10s is the production default — long enough that YOLO flickers don't
 # drop the session, short enough that the agent doesn't talk to thin air.
-VOICE_END_AFTER_NO_FALL_SECONDS = 10.0
+VOICE_END_AFTER_NO_FALL_SECONDS = 5.0
 
 # HTTP timeout for the session-start call.
 VOICE_API_TIMEOUT_SEC = 5.0
