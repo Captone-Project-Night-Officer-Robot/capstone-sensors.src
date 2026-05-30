@@ -10,6 +10,7 @@ sudo apt install -y \
   python3-opencv \
   python3-picamera2 \
   python3-rpi.gpio \
+  libportaudio2 \
   git
 
 echo "Creating Python virtual environment..."

@@ -865,6 +865,112 @@ Add this for operator overhear on the laptop (optional):
 
 ---
 
+# Patrol announcer (bilingual safety voice while driving)
+
+While the car is line-following, searching, or dodging an obstacle, it loops
+a short safety announcement in **English and Korean** through the Pi speaker
+— a presence/warning cue for nearby people.
+
+The **speech is owned by the voice server** (`capstone.voice-src`), not the
+Pi: it renders the message with the **same ElevenLabs voice as the Night
+Officer agent** and serves it at `/api/v1/announce/patrol.wav`. The Pi just
+fetches that WAV once and plays it on a loop — exactly the way it plays the
+agent's TTS during a fall conversation. One voice across the whole system,
+no extra TTS engine on the Pi.
+
+The instant a fall starts being verified, the announcer goes silent
+(`VERIFY` / `FALL` / `VOICE` / `RESUMING`) so it never talks over a fall
+and never fights the voice agent for the speaker. When the car returns to
+driving, it resumes.
+
+```text
+voice-src  ─ renders EN+KR with ElevenLabs ─→  GET /api/v1/announce/patrol.wav
+Pi (driving)   ─ fetch once, loop on speaker ─→  "Safety robot patrolling. Please be careful."
+                                                 "안전 로봇이 순찰 중입니다. 조심하세요."
+fall verifying / voice   →  SILENT (voice agent owns the speaker)
+back to driving          →  resumes the loop
+```
+
+## Prereqs
+
+- The voice server is running on the laptop (same one the voice agent uses):
+  `cd capstone.voice-src && uvicorn src.main:app --host 0.0.0.0 --port 8001`.
+  Its `.env` needs `ELEVEN_API_KEY` and `ELEVEN_VOICE_ID` (already required
+  for the agent).
+- The Pi has the speaker working — `libportaudio2` + `sounddevice`
+  (installed by `scripts/install_pi.sh`; same setup as the voice agent).
+
+Sanity-check the endpoint from the Pi:
+
+```bash
+curl -s http://<laptop-ip>:8001/api/v1/announce/patrol.wav -o /tmp/patrol.wav
+aplay /tmp/patrol.wav      # should speak the EN + KR message
+```
+
+## Run with the announcer on
+
+```bash
+python -m raspbot.apps.line_follow --camera picamera2 --announce --debug
+```
+
+Expected log:
+
+```text
+[announce] fetched patrol clip from http://192.168.1.55:8001/api/v1/announce/patrol.wav (5.2s @ 24000Hz)
+[app] Patrol announcer ON. Speech from: http://192.168.1.55:8001
+[app] White-line follower started. Stop with Ctrl+C.
+```
+
+Combine it with everything else — it shares the speaker with the voice
+agent (they never run at the same time):
+
+```bash
+python -m raspbot.apps.line_follow \
+    --camera picamera2 \
+    --stream --fall-detection --voice --telemetry --announce --debug
+```
+
+## Change the wording
+
+The message lives in the voice server, in
+`capstone.voice-src/src/api/announce.py`:
+
+```python
+PATROL_PHRASES = [
+    "Safety robot patrolling. Please be careful.",
+    "안전 로봇이 순찰 중입니다. 조심하세요.",
+]
+```
+
+Edit the list (add languages too — the multilingual model voices them all
+with the same speaker), then restart the voice server or hit
+`/api/v1/announce/patrol.wav?refresh=1` to re-render.
+
+## Tuning (`raspbot/config.py`)
+
+```python
+PATROL_ANNOUNCE_ENABLED        = True
+PATROL_ANNOUNCE_API_URL        = VOICE_API_URL          # where the speech is served
+PATROL_ANNOUNCE_GAP_SEC        = 6.0                    # silence between loops
+PATROL_ANNOUNCE_SPEAKER_DEVICE = VOICE_SPEAKER_DEVICE   # same speaker as the agent
+```
+
+Too chatty → raise `PATROL_ANNOUNCE_GAP_SEC`. Too quiet → raise the
+speaker's physical / `alsamixer` level (or `VOICE_SPEAKER_GAIN` for the
+agent path).
+
+## Troubleshooting
+
+| Symptom                                                | Fix                                                                          |
+|--------------------------------------------------------|------------------------------------------------------------------------------|
+| `WARNING: patrol announcer disabled (ConnectionError)` | Voice server not running / wrong IP. `curl http://<laptop>:8001/api/v1/announce/patrol.wav` |
+| `WARNING: patrol announcer disabled (sounddevice not available ...)` | `sudo apt install libportaudio2 && pip install sounddevice`    |
+| `500` from `/announce/patrol.wav`                      | ElevenLabs render failed — check `ELEVEN_API_KEY` / `ELEVEN_VOICE_ID` in `capstone.voice-src/.env` and the server logs |
+| Announcer plays on the wrong output                    | Set `PATROL_ANNOUNCE_SPEAKER_DEVICE` (int index or name substring; `python -m sounddevice` lists them) |
+| Talks over the voice agent                             | Shouldn't happen — both key off the state machine. Check `--debug` logs for the state at that moment |
+
+---
+
 # Map dashboard (live path + fall pins + unified logs)
 
 The Pi streams its estimated pose + fall events to the voice-src API, which
@@ -1106,6 +1212,10 @@ Options:
   --voice                         Trigger LiveKit voice agent on fall
   --voice-api URL                 (default: config.VOICE_API_URL)
   --voice-robot-id ID             (default: config.VOICE_ROBOT_ID)
+
+  --announce                      Loop the voice server's bilingual (EN+KR)
+                                  safety announcement through the Pi speaker
+  --announce-api URL              (default: config.PATROL_ANNOUNCE_API_URL)
 
   --telemetry                     Stream pose + fall pins to the map dashboard
   --telemetry-api URL             (default: config.TELEMETRY_API_URL)

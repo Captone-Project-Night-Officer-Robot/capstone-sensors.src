@@ -43,6 +43,7 @@ from raspbot.vision.fall_detector import FallDetectorClient
 from raspbot.vision.fall_verifier import FallVerifier
 from raspbot.vision.mjpeg_server import MJPEGServer
 from raspbot.vision.white_line_detector import WhiteLineDetector, draw_debug
+from raspbot.voice.patrol_announcer import PatrolAnnouncer
 from raspbot.voice.voice_agent_client import VoiceAgentClient
 
 
@@ -226,6 +227,13 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--voice-api", default=cfg.VOICE_API_URL)
     parser.add_argument("--voice-robot-id", default=cfg.VOICE_ROBOT_ID)
     parser.add_argument(
+        "--announce",
+        action="store_true",
+        help="Loop the voice-server's bilingual safety announcement through the "
+        "Pi speaker while driving; goes silent during fall verify / voice handoff.",
+    )
+    parser.add_argument("--announce-api", default=cfg.PATROL_ANNOUNCE_API_URL)
+    parser.add_argument(
         "--telemetry",
         action="store_true",
         help="Stream pose + fall pins to the laptop map dashboard.",
@@ -302,6 +310,21 @@ def main() -> None:
             retry_cooldown_seconds=cfg.VOICE_RETRY_COOLDOWN_SEC,
         )
         print(f"[app] Voice agent ON. API: {args.voice_api}")
+
+    announcer: PatrolAnnouncer | None = None
+    if args.announce and cfg.PATROL_ANNOUNCE_ENABLED:
+        try:
+            announcer = PatrolAnnouncer(
+                api_url=args.announce_api,
+                gap_sec=cfg.PATROL_ANNOUNCE_GAP_SEC,
+                speaker_device=cfg.PATROL_ANNOUNCE_SPEAKER_DEVICE,
+                fetch_timeout_sec=cfg.PATROL_ANNOUNCE_FETCH_TIMEOUT_SEC,
+            )
+            announcer.start()
+            print(f"[app] Patrol announcer ON. Speech from: {args.announce_api}")
+        except Exception as exc:
+            print(f"[app] WARNING: patrol announcer disabled ({exc})")
+            announcer = None
 
     # Telemetry runs even without fall detection — the dashboard map is
     # interesting on its own. Falls just add pins when --fall-detection is on.
@@ -455,6 +478,14 @@ def main() -> None:
                     "INFO", f"Voice session active room={room}",
                 )
 
+            # Patrol announcer speaks only while actively driving. It goes
+            # silent for VERIFY / FALL / VOICE / RESUMING so it never talks
+            # over a fall or fights the voice agent for the speaker.
+            if announcer is not None:
+                announcer.set_active(
+                    state in (State.FOLLOW, State.SEARCH, State.OBSTACLE)
+                )
+
             # ── 3. ACT ──────────────────────────────────────────────────────
             if state in (State.VOICE, State.FALL, State.VERIFY, State.RESUMING):
                 motor.stop()
@@ -508,6 +539,8 @@ def main() -> None:
     except KeyboardInterrupt:
         print("\n[app] Ctrl+C received. Stopping.")
     finally:
+        if announcer is not None:
+            announcer.stop()
         if voice is not None:
             voice.shutdown()
         if fall_client is not None:

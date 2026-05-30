@@ -224,8 +224,8 @@ FALL_SERVER_URL =  "http://172.20.10.12:8000"
 
 # Which USB camera (cv2.VideoCapture index) to read from.
 FALL_USB_CAMERA_INDEX = 0
-FALL_CAMERA_WIDTH = 128
-FALL_CAMERA_HEIGHT = 128
+FALL_CAMERA_WIDTH = 320
+FALL_CAMERA_HEIGHT = 240
 
 # Frames per second sent to the server. Fall events are slow — 5 fps is
 # plenty and keeps wifi/CPU load low.
@@ -339,6 +339,36 @@ VOICE_MIC_QUEUE_MAX = 25
 #   3. Only then raise this value above 1.0.  1.5–2.0 is usually safe
 #      for ElevenLabs TTS; 3.0+ will start to clip on loud syllables.
 VOICE_SPEAKER_GAIN = 1.0
+
+
+# -----------------------------
+# Patrol announcer (bilingual safety voice while driving)
+# While the car is line-following / searching / dodging an obstacle, it loops
+# a short safety announcement (English + Korean) through the Pi speaker. The
+# *speech* is rendered by the voice server (capstone.voice-src) with the SAME
+# ElevenLabs voice as the agent and served at /api/v1/announce/patrol.wav —
+# the Pi just fetches it once and plays it, like it plays the agent's TTS.
+# It goes silent the moment a fall starts being verified so the voice agent
+# can take over the speaker. Enable on the CLI with --announce.
+# -----------------------------
+
+PATROL_ANNOUNCE_ENABLED = True
+
+# Voice server that renders + serves the announcement. Defaults to the same
+# FastAPI as the voice agent (the speech lives there).
+PATROL_ANNOUNCE_API_URL = VOICE_API_URL
+
+# Seconds of silence between the end of one playback and the start of the
+# next. Raise it so the robot isn't talking nonstop; lower for more frequent
+# warnings. (The EN→KR gap inside the clip is set on the server.)
+PATROL_ANNOUNCE_GAP_SEC = 6.0
+
+# HTTP timeout for the one-time clip fetch at startup.
+PATROL_ANNOUNCE_FETCH_TIMEOUT_SEC = 10.0
+
+# Speaker device for announcements. Defaults to the voice-agent speaker so
+# both use the same physical output. int index or name substring.
+PATROL_ANNOUNCE_SPEAKER_DEVICE: int | str | None = VOICE_SPEAKER_DEVICE
 
 
 # -----------------------------
