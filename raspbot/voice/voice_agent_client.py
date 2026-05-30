@@ -56,6 +56,49 @@ except Exception:
     _HAS_SOUNDDEVICE = False
 
 
+def _pick_output_rate(device, src_rate: int, channels: int) -> int:
+    """Return a samplerate the speaker accepts, preferring the source rate.
+
+    Cheap USB audio devices (e.g. UACDemoV1) reject ElevenLabs' 24 kHz TTS
+    and only accept 48 kHz — opening the stream at 24 kHz then fails with
+    paInvalidSampleRate. Probe for a rate the device actually supports.
+    """
+    if _sd is None:
+        return src_rate
+    default_sr = 0
+    try:
+        info = _sd.query_devices(device, "output")
+        default_sr = int(info.get("default_samplerate", 0))
+    except Exception:
+        pass
+    candidates: list[int] = []
+    for r in (src_rate, default_sr, 48000, 44100, 32000, 22050, 16000):
+        if r and r not in candidates:
+            candidates.append(r)
+    for r in candidates:
+        try:
+            _sd.check_output_settings(
+                device=device, samplerate=r, channels=channels, dtype="int16"
+            )
+            return r
+        except Exception:
+            continue
+    return src_rate
+
+
+def _resample_int16(data, src: int, dst: int):
+    """Linear resample mono int16. Good enough for speech."""
+    if _np is None or src == dst or len(data) == 0:
+        return data
+    n_dst = int(round(len(data) * dst / src))
+    if n_dst <= 0:
+        return data
+    x_src = _np.linspace(0.0, 1.0, num=len(data), endpoint=False)
+    x_dst = _np.linspace(0.0, 1.0, num=n_dst, endpoint=False)
+    out = _np.interp(x_dst, x_src, data.astype(_np.float32))
+    return out.astype(_np.int16)
+
+
 @dataclass
 class VoiceSession:
     room_name: str
@@ -105,6 +148,7 @@ class VoiceAgentClient:
         self._mic_pump_task: Optional[asyncio.Task] = None
         self._spk_stream = None                # sounddevice.OutputStream (lazy)
         self._spk_stream_lock = threading.Lock()
+        self._spk_out_rate: Optional[int] = None  # device rate (may differ from TTS)
         self._spk_tasks: list[asyncio.Task] = []
         self._audio_warned_no_sd = False
 
@@ -473,23 +517,41 @@ class VoiceAgentClient:
 
                 with self._spk_stream_lock:
                     if self._spk_stream is None:
+                        out_rate = _pick_output_rate(
+                            cfg.VOICE_SPEAKER_DEVICE, frame.sample_rate, channels
+                        )
                         try:
                             self._spk_stream = _sd.OutputStream(
-                                samplerate=frame.sample_rate,
+                                samplerate=out_rate,
                                 channels=channels,
                                 dtype="int16",
                                 device=cfg.VOICE_SPEAKER_DEVICE,
                             )
                             self._spk_stream.start()
+                            self._spk_out_rate = out_rate
+                            note = (
+                                f" (resampled from {frame.sample_rate}Hz)"
+                                if out_rate != frame.sample_rate else ""
+                            )
                             print(
                                 f"[voice] speaker started "
-                                f"{frame.sample_rate}Hz x{channels}ch "
-                                f"device={cfg.VOICE_SPEAKER_DEVICE or 'default'}"
+                                f"{out_rate}Hz x{channels}ch "
+                                f"device={cfg.VOICE_SPEAKER_DEVICE or 'default'}{note}"
                             )
                         except Exception as exc:
                             print(f"[voice] speaker open FAILED: {exc}")
                             self._spk_stream = None
                             return
+
+                # Resample mono TTS to the device rate if they differ.
+                if (
+                    self._spk_out_rate is not None
+                    and self._spk_out_rate != frame.sample_rate
+                    and channels == 1
+                ):
+                    samples = _resample_int16(
+                        samples, frame.sample_rate, self._spk_out_rate
+                    )
 
                 if channels > 1:
                     samples = samples.reshape(-1, channels)
@@ -513,3 +575,4 @@ class VoiceAgentClient:
                 except Exception:
                     pass
                 self._spk_stream = None
+            self._spk_out_rate = None

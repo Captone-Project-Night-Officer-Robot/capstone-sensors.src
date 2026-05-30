@@ -83,7 +83,17 @@ class PatrolAnnouncer:
         if not _HAS_NUMPY or _np is None:
             raise RuntimeError("numpy not available — cannot play announcements.")
 
-        self._clip = self._fetch_clip()
+        data, src_rate = self._fetch_clip()
+
+        # Many cheap USB audio devices (e.g. UACDemoV1) reject 24 kHz — the
+        # rate ElevenLabs emits — and only accept 48 kHz. Pick a rate the
+        # speaker actually supports and resample the clip to it once here, so
+        # the playback OutputStream always opens cleanly.
+        out_rate = self._pick_output_rate(src_rate)
+        if out_rate != src_rate:
+            data = self._resample(data, src_rate, out_rate)
+            print(f"[announce] resampled {src_rate}Hz → {out_rate}Hz for speaker")
+        self._clip = (data, out_rate)
 
         self._stop_event.clear()
         self._thread = threading.Thread(
@@ -131,6 +141,50 @@ class PatrolAnnouncer:
             f"({len(data) / rate:.1f}s @ {rate}Hz)"
         )
         return (data, rate)
+
+    # ─── sample-rate handling ─────────────────────────────────────
+
+    def _pick_output_rate(self, src_rate: int) -> int:
+        """Return a samplerate the speaker accepts, preferring the source rate."""
+        if _sd is None:
+            return src_rate
+
+        default_sr = 0
+        try:
+            info = _sd.query_devices(self.speaker_device, "output")
+            default_sr = int(info.get("default_samplerate", 0))
+        except Exception:
+            pass
+
+        candidates: list[int] = []
+        for r in (src_rate, default_sr, 48000, 44100, 32000, 22050, 16000):
+            if r and r not in candidates:
+                candidates.append(r)
+
+        for r in candidates:
+            try:
+                _sd.check_output_settings(
+                    device=self.speaker_device,
+                    samplerate=r,
+                    channels=1,
+                    dtype="int16",
+                )
+                return r
+            except Exception:
+                continue
+        return src_rate  # nothing matched; let _play surface the error
+
+    def _resample(self, data: Any, src: int, dst: int) -> Any:
+        """Linear resample int16 mono. Good enough for a speech announcement."""
+        if src == dst or len(data) == 0:
+            return data
+        n_dst = int(round(len(data) * dst / src))
+        if n_dst <= 0:
+            return data
+        x_src = _np.linspace(0.0, 1.0, num=len(data), endpoint=False)
+        x_dst = _np.linspace(0.0, 1.0, num=n_dst, endpoint=False)
+        out = _np.interp(x_dst, x_src, data.astype(_np.float32))
+        return out.astype(_np.int16)
 
     # ─── playback thread ──────────────────────────────────────────
 
