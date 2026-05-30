@@ -930,6 +930,25 @@ python -m raspbot.apps.line_follow \
     --stream --fall-detection --voice --telemetry --announce --debug
 ```
 
+## Test just the speech (no camera / motors)
+
+To verify the speaker + the announcement alone — the same audio path the
+robot uses while driving, but with nothing else running:
+
+```bash
+python -m scripts.announce_test                       # loop 30s
+python -m scripts.announce_test --duration 0          # until Ctrl+C
+python -m scripts.announce_test --api-url http://192.168.1.55:8001
+```
+
+Expected:
+
+```text
+[announce] fetched patrol clip from http://.../api/v1/announce/patrol.wav (5.6s @ 24000Hz)
+[announce] resampled 24000Hz → 48000Hz for speaker
+[announce-test] announcing — you should hear EN + KR on a loop.
+```
+
 ## Change the wording
 
 The message lives in the voice server, in
