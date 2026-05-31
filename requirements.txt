@@ -1,2 +1,16 @@
-numpy
+# numpy 1.x: required by the system cv2 / picamera2 on the Pi. numpy 2.x
+# breaks the ABI for those wheels — keep this pin.
+numpy<2
 opencv-python
+requests
+
+# Optional — only needed if you run with --voice (Pi joins LiveKit room).
+# Heavy install (~30 MB + deps). Install separately on the Pi:
+#   pip install livekit
+# livekit
+
+# Optional — only needed for Pi audio I/O (mic publish + speaker playback).
+# Requires the system portaudio library:
+#   sudo apt install libportaudio2
+#   pip install sounddevice
+# sounddevice

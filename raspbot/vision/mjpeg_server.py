@@ -30,21 +30,35 @@ import numpy as np
 
 
 _INDEX_HTML = b"""<!DOCTYPE html>
-<html><head><title>Raspbot Line Follow</title>
+<html><head><title>Raspbot Live</title>
 <style>
   body { background: #111; color: #eee; font-family: monospace;
          margin: 0; padding: 1em; }
   h1 { margin: 0 0 0.5em 0; font-size: 1.1em; }
   h2 { margin: 0.4em 0; font-size: 0.95em; color: #9cf; }
   .row { display: flex; flex-wrap: wrap; gap: 1em; }
-  .col { flex: 1; min-width: 320px; }
+  .col { flex: 1; min-width: 320px; max-width: 540px; }
   img { width: 100%; height: auto; border: 1px solid #444;
-        image-rendering: pixelated; }
+        image-rendering: pixelated; background: #000; min-height: 180px; }
+  .note { color: #888; font-size: 0.8em; margin-top: 0.4em; }
 </style></head><body>
-  <h1>Raspbot Line Follow &mdash; Live</h1>
+  <h1>Raspbot &mdash; Live</h1>
   <div class="row">
-    <div class="col"><h2>Annotated</h2><img src="/stream.mjpg"></div>
-    <div class="col"><h2>White-line mask</h2><img src="/mask.mjpg"></div>
+    <div class="col">
+      <h2>Annotated (Pi camera)</h2>
+      <img src="/stream.mjpg">
+      <div class="note">Line-follow debug overlay</div>
+    </div>
+    <div class="col">
+      <h2>White-line mask</h2>
+      <img src="/mask.mjpg">
+      <div class="note">What the detector sees</div>
+    </div>
+    <div class="col">
+      <h2>Fall detection (USB camera)</h2>
+      <img src="/fall.mjpg">
+      <div class="note">Empty if --fall-detection is off</div>
+    </div>
   </div>
 </body></html>"""
 
@@ -79,7 +93,11 @@ class MJPEGServer:
 
     def start(self) -> None:
         server_self = self
-        stream_map = {"/stream.mjpg": "main", "/mask.mjpg": "mask"}
+        stream_map = {
+            "/stream.mjpg": "main",
+            "/mask.mjpg": "mask",
+            "/fall.mjpg": "fall",
+        }
 
         class Handler(BaseHTTPRequestHandler):
             def log_message(self, fmt, *args):

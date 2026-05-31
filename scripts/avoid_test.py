@@ -31,7 +31,7 @@ def main() -> None:
     ultrasonic.start()
 
     print(
-        f"Sampling sensors. AVOID_DISTANCE_CM={cfg.AVOID_DISTANCE_CM}. "
+        f"Sampling sensors. OBSTACLE_DISTANCE_CM={cfg.OBSTACLE_DISTANCE_CM}. "
         "Ctrl+C to stop."
     )
 
@@ -41,7 +41,8 @@ def main() -> None:
             r = ir.read()
             raw_l, raw_r = ir.read_raw()
             cm_str = "  inf" if cm == float("inf") else f"{cm:6.1f}"
-            flag = "BLOCKED" if (cm < cfg.AVOID_DISTANCE_CM or r.any_blocked) else "clear  "
+            blocked = cm <= cfg.OBSTACLE_DISTANCE_CM or r.any_blocked
+            flag = "BLOCKED" if blocked else "clear  "
             print(
                 f"{flag}  distance={cm_str} cm   "
                 f"IR raw=(L={raw_l},R={raw_r})   "
