@@ -359,9 +359,9 @@ PATROL_ANNOUNCE_ENABLED = True
 PATROL_ANNOUNCE_API_URL = VOICE_API_URL
 
 # Seconds of silence between the end of one playback and the start of the
-# next. Raise it so the robot isn't talking nonstop; lower for more frequent
-# warnings. (The EN→KR gap inside the clip is set on the server.)
-PATROL_ANNOUNCE_GAP_SEC = 6.0
+# next. 0.0 = repeat immediately with no pause. Raise it if the robot is
+# talking too constantly. (The EN→KR gap inside the clip is set on the server.)
+PATROL_ANNOUNCE_GAP_SEC = 0.5
 
 # HTTP timeout for the one-time clip fetch at startup.
 PATROL_ANNOUNCE_FETCH_TIMEOUT_SEC = 10.0

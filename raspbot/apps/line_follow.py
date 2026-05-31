@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import signal
 import time
 from enum import Enum
 
@@ -192,6 +193,27 @@ def _gpio_cleanup() -> None:
         pass
 
 
+def _install_signal_handlers() -> None:
+    """Make `kill <pid>` (SIGTERM) and a closed SSH session (SIGHUP) shut down
+    as cleanly as Ctrl+C.
+
+    The Raspbot's motor controller latches the last speed command, so the car
+    keeps driving unless Car_Stop is sent. By default Python terminates on
+    SIGTERM/SIGHUP WITHOUT running the finally block — leaving a runaway robot.
+    Raising KeyboardInterrupt here routes those signals through the same
+    graceful shutdown path (finally → motor.safe_stop())."""
+
+    def _raise_keyboard_interrupt(signum, _frame):  # noqa: ANN001
+        raise KeyboardInterrupt()
+
+    for sig in (signal.SIGTERM, signal.SIGHUP):
+        try:
+            signal.signal(sig, _raise_keyboard_interrupt)
+        except (ValueError, OSError, AttributeError):
+            # Not in main thread, or signal unavailable on this platform.
+            pass
+
+
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("--camera", choices=["picamera2", "usb"], default="picamera2")
@@ -247,6 +269,10 @@ def _parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = _parse_args()
+
+    # Convert SIGTERM / SIGHUP into a clean shutdown so the motors always get
+    # a stop command, even when killed with `kill` or by closing the SSH tab.
+    _install_signal_handlers()
 
     camera = create_camera(
         camera_type=args.camera,

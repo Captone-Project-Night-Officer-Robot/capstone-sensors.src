@@ -9,6 +9,7 @@ We delegate to Yahboom's library YB_Pcb_Car.py — drop it next to this file
 
 from __future__ import annotations
 
+import atexit
 import time
 from typing import Callable, Optional
 
@@ -49,6 +50,21 @@ class MotorController:
 
         self.car = YB_Pcb_Car.YB_Pcb_Car()
         self.stop()
+
+        # Last-resort safety net: the Raspbot's STM8 latches the last speed
+        # command and keeps the motors running until it receives Car_Stop.
+        # If the process exits without our finally-block cleanup, this atexit
+        # hook still sends a stop so the car doesn't drive off on its own.
+        # (Note: atexit does NOT run on SIGKILL / power loss — install_pi
+        # signal handlers in the app cover SIGTERM/SIGHUP.)
+        atexit.register(self._atexit_stop)
+
+    def _atexit_stop(self) -> None:
+        try:
+            if self.car is not None:
+                self.car.Car_Stop()
+        except Exception:
+            pass
 
     def set_observer(self, observer: Optional[MotorObserver]) -> None:
         """Register a callback fired with the *intended physical* wheel

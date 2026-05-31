@@ -190,13 +190,15 @@ class PatrolAnnouncer:
 
     def _run(self) -> None:
         while not self._stop_event.is_set():
-            # Block cheaply until the car is driving.
-            if not self._active_event.wait(timeout=0.25):
+            # Block cheaply until the car is driving. Short poll so playback
+            # starts almost immediately once set_active(True) is called.
+            if not self._active_event.wait(timeout=0.05):
                 continue
             if self._clip is not None:
                 data, rate = self._clip
                 self._play(data, rate)
-            self._sleep_interruptible(self.gap_sec)
+            if self.gap_sec > 0:
+                self._sleep_interruptible(self.gap_sec)
 
     def _play(self, data: Any, rate: int) -> None:
         if _sd is None:
